@@ -19,7 +19,8 @@ migrate = Migrate()
 # Flask app instance
 app = Flask(__name__)
 basedir = os.path.abspath(os.path.dirname(__file__))
-
+db_path = os.path.join(basedir, 'instance/rms.db')
+CORS(app, supports_credentials=True) 
 # Config classes
 class Config:
     SECRET_KEY = os.getenv('SECRET_KEY', 'your-secret-key')
@@ -27,17 +28,15 @@ class Config:
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
 class DevelopmentConfig(Config):
-    DEBUG = True
-    SQLALCHEMY_DATABASE_URI = os.getenv('DEV_DATABASE_URL', f"sqlite:///{os.path.join(basedir, 'dev.db')}")
-
+   DEBUG = True
+   SQLALCHEMY_DATABASE_URI = os.getenv('DEV_DATABASE_URL', f'sqlite:///{db_path}')
 class TestingConfig(Config):
     TESTING = True
     SQLALCHEMY_DATABASE_URI = os.getenv('TEST_DATABASE_URL', 'sqlite:///:memory:')
 
 class ProductionConfig(Config):
     DEBUG = False
-    SQLALCHEMY_DATABASE_URI = os.getenv('DATABASE_URL', 'sqlite:///prod.db')
-
+    SQLALCHEMY_DATABASE_URI = os.getenv('DATABASE_URL', f'sqlite:///{db_path}')
 config_by_name = {
     'development': DevelopmentConfig,
     'testing': TestingConfig,

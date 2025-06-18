@@ -65,6 +65,7 @@ class MaintenanceRequests(db.Model):
     request_priority = db.Column(db.String(50), nullable=False)
     cost= db.Column(db.Float, nullable=False)
 class Users(db.Model):
+    __tablename__ = 'users'
     user_id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(50), nullable=False)
     password = db.Column(db.String(50), nullable=False)

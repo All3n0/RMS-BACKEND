@@ -1,18 +1,36 @@
-from flask import Flask, request, jsonify
+import os
+from datetime import datetime
+from flask import Flask, request, jsonify, session
 from flask_sqlalchemy import SQLAlchemy
 from flask_marshmallow import Marshmallow
 from flask_migrate import Migrate
-from datetime import datetime
+from flask_cors import CORS
+from werkzeug.security import generate_password_hash, check_password_hash
+from dotenv import load_dotenv
 
-# === Initialize extensions (no app bound yet) ===
+load_dotenv()
+
+# === Extensions ===
 db = SQLAlchemy()
 ma = Marshmallow()
 migrate = Migrate()
 
-# === Create Flask app ===
+# === Flask App Config ===
 app = Flask(__name__)
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///rms.db'
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+from config import config_by_name
+env = os.getenv("FLASK_ENV", "development")
+app.config.from_object(config_by_name[env])
+
+# CORS Configuration (Frontend on port 3000)
+CORS(app, origins=["http://localhost:3000"], supports_credentials=True)
+
+# Environment Configuration
+class Config:
+    SECRET_KEY = os.getenv('SECRET_KEY', 'supersecret')
+    SQLALCHEMY_TRACK_MODIFICATIONS = False
+
+
+
 
 # === Bind extensions to app ===
 db.init_app(app)
@@ -246,6 +264,87 @@ def create_user():
 @app.route('/users', methods=['GET'])
 def get_users():
     return users_schema.jsonify(Users.query.all())
+
+@app.route('/register', methods=['POST'])
+def register():
+    data = request.json
+
+    # Validate required fields
+    required_fields = ['username', 'password', 'role', 'is_active']
+    for field in required_fields:
+        if field not in data:
+            return jsonify({'error': f'{field} is required'}), 400
+
+    # Check if user already exists
+    existing_user = Users.query.filter_by(username=data['username']).first()
+    if existing_user:
+        return jsonify({'error': 'User already exists'}), 400
+
+    # Hash the password
+    hashed_password = generate_password_hash(data['password'])
+
+    # Create new user
+    new_user = Users(
+        username=data['username'],
+        password=hashed_password,
+        role=data['role'],
+        last_login=None,
+        is_active=data['is_active']
+    )
+
+    # Save to DB
+    db.session.add(new_user)
+    db.session.commit()
+
+    return jsonify({
+        'message': 'User created successfully',
+        'user': {
+            'user_id': new_user.user_id,
+            'username': new_user.username,
+            'role': new_user.role,
+            'is_active': new_user.is_active
+        }
+    }), 201
+@app.route('/login', methods=['POST'])
+def login():
+    data = request.json
+    user = Users.query.filter_by(username=data['username']).first()
+
+    if not user or not check_password_hash(user.password, data['password']):
+        return jsonify({'error': 'Invalid username or password'}), 401
+
+    user.last_login = datetime.utcnow()
+    db.session.commit()
+
+    session['user_id'] = user.user_id
+    resp = jsonify(user_schema.dump(user))
+    resp.set_cookie('user_id', str(user.user_id), httponly=True)
+    return resp
+@app.route('/logout', methods=['POST'])
+def logout():
+    session.pop('user_id', None)
+    response = jsonify({'message': 'Logged out'})
+    response.set_cookie('user_id', '', expires=0)
+    return response
+@app.route('/forgot-password', methods=['POST'])
+def forgot_password():
+    data = request.json
+    user = Users.query.filter_by(username=data['username']).first()
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+
+    # In real app, send email token here.
+    return jsonify({'message': 'Recovery instructions sent'}), 200
+@app.route('/recover-password', methods=['POST'])
+def recover_password():
+    data = request.json
+    user = Users.query.filter_by(username=data['username']).first()
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+
+    user.password = generate_password_hash(data['new_password'])
+    db.session.commit()
+    return jsonify({'message': 'Password updated successfully'}), 200
 
 
 # === Run the app ===
