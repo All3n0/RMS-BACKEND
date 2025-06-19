@@ -142,10 +142,56 @@ def delete_tenant(id):
 # ------- PROPERTIES -------
 @app.route('/properties', methods=['POST'])
 def create_property():
-    property = property_schema.load(request.json)
-    db.session.add(property)
-    db.session.commit()
-    return property_schema.jsonify(property), 201
+    data = request.get_json()
+    required_fields = ['address', 'city', 'state', 'zip_code', 'admin_id']
+    
+    for field in required_fields:
+        if field not in data:
+            return jsonify({'error': f'{field} is required'}), 400
+
+    try:
+        new_property = Properties(
+            address=data['address'],
+            city=data['city'],
+            state=data['state'],
+            zip_code=data['zip_code'],
+            admin_id=data['admin_id']
+        )
+        db.session.add(new_property)
+        db.session.commit()
+
+        return jsonify({
+            'message': 'Property created successfully',
+            'property': {
+                'id': new_property.id,
+                'address': new_property.address,
+                'city': new_property.city,
+                'state': new_property.state,
+                'zip_code': new_property.zip_code
+            }
+        }), 201
+
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': 'Failed to create property', 'details': str(e)}), 500
+@app.route('/properties/admin/<int:admin_id>', methods=['GET'])
+def get_properties_by_admin(admin_id):
+    properties = Properties.query.filter_by(admin_id=admin_id).all()
+    
+    if not properties:
+        return jsonify({'message': 'No properties found for this admin.'}), 404
+
+    property_list = []
+    for prop in properties:
+        property_list.append({
+            'id': prop.id,
+            'address': prop.address,
+            'city': prop.city,
+            'state': prop.state,
+            'zip_code': prop.zip_code
+        })
+
+    return jsonify(property_list), 200
 
 @app.route('/properties', methods=['GET'])
 def get_properties():
@@ -166,16 +212,58 @@ def delete_property(id):
     return '', 204
 
 # ------- UNITS -------
+# app.py or routes.py
+
 @app.route('/units', methods=['POST'])
 def create_unit():
-    unit = unit_schema.load(request.json)
-    db.session.add(unit)
-    db.session.commit()
-    return unit_schema.jsonify(unit), 201
+    data = request.get_json()
+    required_fields = ['property_id', 'unit_number', 'unit_name', 'status', 'monthly_rent', 'deposit_amount', 'admin_id', 'type']
 
-@app.route('/units', methods=['GET'])
-def get_units():
-    return units_schema.jsonify(Units.query.all())
+    for field in required_fields:
+        if field not in data:
+            return jsonify({'error': f'{field} is required'}), 400
+
+    try:
+        new_unit = Units(
+            property_id=data['property_id'],
+            unit_number=data['unit_number'],
+            unit_name=data['unit_name'],
+            status=data['status'],
+            monthly_rent=data['monthly_rent'],
+            deposit_amount=data['deposit_amount'],
+            admin_id=data['admin_id'],
+            type=data['type']
+        )
+        db.session.add(new_unit)
+        db.session.commit()
+
+        return jsonify({
+            'message': 'Unit created successfully',
+            'unit': {
+                'unit_id': new_unit.unit_id,
+                'unit_number': new_unit.unit_number,
+                'unit_name': new_unit.unit_name
+            }
+        }), 201
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/units/property/<int:property_id>', methods=['GET'])
+def get_units_by_property(property_id):
+    units = Units.query.filter_by(property_id=property_id).all()
+    return jsonify([
+        {
+            'unit_id': u.unit_id,
+            'unit_name': u.unit_name,
+            'unit_number': u.unit_number,
+            'status': u.status,
+            'type': u.type,
+            'monthly_rent': u.monthly_rent,
+            'deposit_amount': u.deposit_amount
+        }
+        for u in units
+    ]), 200
 
 @app.route('/units/<int:id>', methods=['PUT'])
 def update_unit(id):

@@ -49,6 +49,7 @@ class Units(db.Model):
     monthly_rent = db.Column(db.Float, nullable=False)
     deposit_amount = db.Column(db.Float, nullable=False)
     admin_id = db.Column(db.Integer, db.ForeignKey('admin.admin_id'), nullable=False)
+    type=db.Column(db.String(50), nullable=False)
     # tenants = db.relationship('Leases', backref='unit', lazy=True)
     
 class Leases(db.Model):
