@@ -1,13 +1,13 @@
 import os
 from datetime import datetime
-from flask import Flask, request, jsonify, session
+from flask import Flask, json, request, jsonify, session
 from flask_sqlalchemy import SQLAlchemy
 from flask_marshmallow import Marshmallow
 from flask_migrate import Migrate
 from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
 from dotenv import load_dotenv
-
+import re
 load_dotenv()
 
 # === Extensions ===
@@ -265,12 +265,16 @@ def create_user():
 def get_users():
     return users_schema.jsonify(Users.query.all())
 
+from flask import request, jsonify, session
+from werkzeug.security import generate_password_hash
+from datetime import datetime
+from models import db, Users, Tenants, Admin
+
 @app.route('/register', methods=['POST'])
 def register():
     data = request.json
 
-    # Validate required fields
-    required_fields = ['username', 'password', 'role', 'is_active']
+    required_fields = ['username', 'password', 'role', 'email', 'is_active']
     for field in required_fields:
         if field not in data:
             return jsonify({'error': f'{field} is required'}), 400
@@ -280,20 +284,44 @@ def register():
     if existing_user:
         return jsonify({'error': 'User already exists'}), 400
 
-    # Hash the password
     hashed_password = generate_password_hash(data['password'])
 
-    # Create new user
+    # Create user
     new_user = Users(
         username=data['username'],
+        email=data['email'],
         password=hashed_password,
         role=data['role'],
         last_login=None,
         is_active=data['is_active']
     )
-
-    # Save to DB
     db.session.add(new_user)
+    db.session.commit()
+
+    # Insert into related table based on role
+    if new_user.role == 'tenant':
+        new_tenant = Tenants(
+            first_name=new_user.username,
+            last_name='',
+            email=new_user.email,
+            phone='',
+            date_of_birth=datetime.utcnow().date(),
+            emergency_contact_name='',
+            emergency_contact_number='',
+            move_in_date=datetime.utcnow().date(),
+            move_out_date=None,
+            admin_id=1  # Optional: You might assign a default admin
+        )
+        db.session.add(new_tenant)
+
+    elif new_user.role == 'admin':
+        new_admin = Admin(
+            username=new_user.username,
+            password=hashed_password,
+            gmail=new_user.email
+        )
+        db.session.add(new_admin)
+
     db.session.commit()
 
     return jsonify({
@@ -301,51 +329,94 @@ def register():
         'user': {
             'user_id': new_user.user_id,
             'username': new_user.username,
+            'email': new_user.email,
             'role': new_user.role,
             'is_active': new_user.is_active
         }
     }), 201
+
+
+
+# -------------------- LOGIN --------------------
 @app.route('/login', methods=['POST'])
 def login():
     data = request.json
-    user = Users.query.filter_by(username=data['username']).first()
+    user = Users.query.filter_by(email=data['email']).first()
 
     if not user or not check_password_hash(user.password, data['password']):
-        return jsonify({'error': 'Invalid username or password'}), 401
+        return jsonify({'error': 'Invalid email or password'}), 401
 
     user.last_login = datetime.utcnow()
     db.session.commit()
 
     session['user_id'] = user.user_id
-    resp = jsonify(user_schema.dump(user))
-    resp.set_cookie('user_id', str(user.user_id), httponly=True)
+
+    resp = jsonify({
+        'message': 'Login successful',
+        'user': {
+            'user_id': user.user_id,
+            'username': user.username,
+            'email': user.email,
+            'role': user.role
+        }
+    })
+
+    # 🔥 Set cookie with key = 'user' to match your Next.js logic
+    resp.set_cookie('user', json.dumps({
+    'user_id': user.user_id,
+    'username': user.username,
+    'role': user.role,
+    'email': user.email
+}), httponly=True)
+
+
     return resp
+
+
+# -------------------- LOGOUT --------------------
 @app.route('/logout', methods=['POST'])
 def logout():
     session.pop('user_id', None)
     response = jsonify({'message': 'Logged out'})
     response.set_cookie('user_id', '', expires=0)
     return response
+
+
+# -------------------- FORGOT PASSWORD --------------------
 @app.route('/forgot-password', methods=['POST'])
 def forgot_password():
     data = request.json
-    user = Users.query.filter_by(username=data['username']).first()
+    email = data.get('email')
+
+    if not email:
+        return jsonify({'error': 'Email is required'}), 400
+
+    user = Users.query.filter_by(email=email).first()
     if not user:
         return jsonify({'error': 'User not found'}), 404
 
-    # In real app, send email token here.
-    return jsonify({'message': 'Recovery instructions sent'}), 200
+    # NOTE: In production, send a password reset token via email here.
+    return jsonify({'message': 'Recovery instructions sent to email'}), 200
+
+
+# -------------------- RECOVER PASSWORD --------------------
 @app.route('/recover-password', methods=['POST'])
 def recover_password():
     data = request.json
-    user = Users.query.filter_by(username=data['username']).first()
+    email = data.get('email')
+    new_password = data.get('new_password')
+
+    if not email or not new_password:
+        return jsonify({'error': 'Email and new password are required'}), 400
+
+    user = Users.query.filter_by(email=email).first()
     if not user:
         return jsonify({'error': 'User not found'}), 404
 
-    user.password = generate_password_hash(data['new_password'])
+    user.password = generate_password_hash(new_password)
     db.session.commit()
-    return jsonify({'message': 'Password updated successfully'}), 200
 
+    return jsonify({'message': 'Password updated successfully'}), 200
 
 # === Run the app ===
 if __name__ == '__main__':
