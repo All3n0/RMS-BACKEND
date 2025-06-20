@@ -1,7 +1,8 @@
 import os
 from datetime import datetime
-from flask import Flask, json, request, jsonify, session
+from flask import Blueprint, Flask, json, request, jsonify, session
 from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy import extract, func
 from flask_marshmallow import Marshmallow
 from flask_migrate import Migrate
 from flask_cors import CORS
@@ -300,6 +301,128 @@ def get_units_by_property(property_id):
     ]), 200
 
 # Unit routes (assuming you're using Flask)
+@app.route('/units/<int:unit_id>', methods=['GET'])
+def get_unit(unit_id):
+    try:
+        unit = Units.query.get_or_404(unit_id)
+        current_lease = Leases.query.filter_by(unit_id=unit_id, lease_status='active').first()
+        tenant = Tenants.query.get(current_lease.tenant_id) if current_lease else None
+
+        payments = []
+        if current_lease:
+            payments = RentPayments.query.filter_by(lease_id=current_lease.lease_id)\
+                .order_by(RentPayments.period_start.desc()).all()
+
+        return jsonify({
+            'unit': unit.to_dict(),
+            'current_tenant': tenant.to_dict() if tenant else None,
+            'current_lease': current_lease.to_dict() if current_lease else None,
+            'payment_history': [p.to_dict() for p in payments]
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/units/<int:unit_id>/assign-tenant', methods=['POST'])
+def assign_tenant(unit_id):
+    try:
+        data = request.get_json()
+        unit = Units.query.get_or_404(unit_id)
+
+        if data.get('tenant_id'):
+            tenant = Tenants.query.get_or_404(data['tenant_id'])
+        else:
+            tenant = Tenants(
+                first_name=data['first_name'],
+                last_name=data['last_name'],
+                email=data['email'],
+                phone=data['phone'],
+                date_of_birth=datetime.strptime(data['date_of_birth'], '%Y-%m-%d'),
+                emergency_contact_name=data['emergency_contact_name'],
+                emergency_contact_number=data['emergency_contact_number'],
+                move_in_date=datetime.strptime(data['move_in_date'], '%Y-%m-%d'),
+                admin_id=data['admin_id']
+            )
+            db.session.add(tenant)
+
+        lease = Leases(
+            tenant_id=tenant.id,
+            unit_id=unit_id,
+            start_date=datetime.strptime(data['lease_start'], '%Y-%m-%d'),
+            end_date=datetime.strptime(data['lease_end'], '%Y-%m-%d'),
+            monthly_rent=unit.monthly_rent,
+            deposit_amount=unit.deposit_amount,
+            lease_status='active',
+            property_id=unit.property_id,
+            admin_id=data['admin_id'],
+            payment_due_day=data.get('payment_due_day', 1)
+        )
+        db.session.add(lease)
+
+        unit.status = 'occupied'
+        db.session.commit()
+
+        return jsonify({
+            'message': 'Tenant assigned successfully',
+            'tenant': tenant.to_dict(),
+            'lease': lease.to_dict()
+        })
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/units/<int:unit_id>/record-payment', methods=['POST'])
+def record_payment(unit_id):
+    try:
+        data = request.get_json()
+        lease = Leases.query.filter_by(unit_id=unit_id, lease_status='active').first_or_404()
+
+        payment = RentPayments(
+            lease_id=lease.lease_id,
+            payment_date=datetime.strptime(data['payment_date'], '%Y-%m-%d'),
+            amount=data['amount'],
+            payment_method=data['payment_method'],
+            transaction_reference_number=data.get('transaction_reference', ''),
+            period_start=datetime.strptime(data['period_start'], '%Y-%m-%d'),
+            period_end=datetime.strptime(data['period_end'], '%Y-%m-%d'),
+            status='completed',
+            tenant_id=lease.tenant_id,
+            admin_id=data['admin_id']
+        )
+        db.session.add(payment)
+        db.session.commit()
+
+        return jsonify({
+            'message': 'Payment recorded successfully',
+            'payment': payment.to_dict()
+        })
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/units/<int:unit_id>/end-lease', methods=['POST'])
+def end_lease(unit_id):
+    try:
+        data = request.get_json()
+        lease = Leases.query.filter_by(unit_id=unit_id, lease_status='active').first_or_404()
+
+        lease.lease_status = 'ended'
+        lease.end_date = datetime.strptime(data['end_date'], '%Y-%m-%d')
+
+        unit = Units.query.get(unit_id)
+        unit.status = 'vacant'
+
+        db.session.commit()
+
+        return jsonify({
+            'message': 'Lease ended successfully',
+            'unit': unit.to_dict()
+        })
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
 
 # Update Unit
 @app.route('/units/<int:unit_id>', methods=['PATCH'])
@@ -556,7 +679,45 @@ def recover_password():
     db.session.commit()
 
     return jsonify({'message': 'Password updated successfully'}), 200
-
+@app.route('/admin/stats/<int:admin_id>', methods=['GET'])
+def get_admin_stats(admin_id):
+    try:
+        # Count properties for this admin
+        property_count = db.session.query(func.count(Properties.id))\
+            .filter(Properties.admin_id == admin_id)\
+            .scalar()
+        
+        # Count ALL units for this admin
+        total_units = db.session.query(func.count(Units.unit_id))\
+            .join(Properties)\
+            .filter(Properties.admin_id == admin_id)\
+            .scalar()
+        
+        # Count only occupied units for this admin
+        occupied_units = db.session.query(func.count(Units.unit_id))\
+            .join(Properties)\
+            .filter(
+                Properties.admin_id == admin_id,
+                Units.status == 'occupied'
+            )\
+            .scalar()
+        
+        # Calculate potential revenue from all units
+        potential_revenue = db.session.query(func.sum(Units.monthly_rent))\
+            .join(Properties)\
+            .filter(Properties.admin_id == admin_id)\
+            .scalar() or 0
+        
+        return jsonify({
+            'property_count': property_count or 0,
+            'total_units': total_units or 0,
+            'occupied_units': occupied_units or 0,
+            'potential_revenue': potential_revenue,
+            'occupancy_rate': round((occupied_units / total_units * 100) if total_units > 0 else 0)
+        }), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 # === Run the app ===
 if __name__ == '__main__':
     with app.app_context():
