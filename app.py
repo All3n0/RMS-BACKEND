@@ -197,26 +197,60 @@ def get_properties_by_admin(admin_id):
 def get_properties():
     return properties_schema.jsonify(Properties.query.all())
 
-@app.route('/properties/<int:id>', methods=['PUT'])
-def update_property(id):
-    prop = Properties.query.get_or_404(id)
-    for k, v in request.json.items():
-        setattr(prop, k, v)
-    db.session.commit()
-    return property_schema.jsonify(prop)
+# Property routes (assuming you're using Flask)
 
-@app.route('/properties/<int:id>', methods=['DELETE'])
-def delete_property(id):
-    db.session.delete(Properties.query.get_or_404(id))
+# Update Property
+@app.route('/properties/<int:property_id>', methods=['PATCH'])
+def update_property(property_id):
+    data = request.get_json()
+    property = Properties.query.get(property_id)
+    
+    if not property:
+        return jsonify({'error': 'Property not found'}), 404
+    
+    # Update only allowed fields
+    allowed_fields = ['address', 'city', 'state', 'zip_code']
+    for key, value in data.items():
+        if key in allowed_fields and hasattr(property, key):
+            setattr(property, key, value)
+    
     db.session.commit()
-    return '', 204
+    return jsonify({
+        'id': property.id,
+        'address': property.address,
+        'city': property.city,
+        'state': property.state,
+        'zip_code': property.zip_code,
+        'admin_id': property.admin_id
+    }), 200
 
+# Delete Property
+@app.route('/properties/<int:property_id>', methods=['DELETE'])
+def delete_property(property_id):
+    try:
+        property = Properties.query.get(property_id)
+        
+        if not property:
+            return jsonify({'error': 'Property not found'}), 404
+        
+        # First delete all associated units
+        Units.query.filter_by(property_id=property_id).delete()
+        
+        # Then delete the property
+        db.session.delete(property)
+        db.session.commit()
+        
+        return jsonify({'message': 'Property and all its units deleted successfully'}), 200
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
 # ------- UNITS -------
 # app.py or routes.py
 
 @app.route('/units', methods=['POST'])
 def create_unit():
     data = request.get_json()
+    print(data)
     required_fields = ['property_id', 'unit_number', 'unit_name', 'status', 'monthly_rent', 'deposit_amount', 'admin_id', 'type']
 
     for field in required_fields:
@@ -265,19 +299,36 @@ def get_units_by_property(property_id):
         for u in units
     ]), 200
 
-@app.route('/units/<int:id>', methods=['PUT'])
-def update_unit(id):
-    unit = Units.query.get_or_404(id)
-    for k, v in request.json.items():
-        setattr(unit, k, v)
-    db.session.commit()
-    return unit_schema.jsonify(unit)
+# Unit routes (assuming you're using Flask)
 
-@app.route('/units/<int:id>', methods=['DELETE'])
-def delete_unit(id):
-    db.session.delete(Units.query.get_or_404(id))
+# Update Unit
+@app.route('/units/<int:unit_id>', methods=['PATCH'])
+def update_unit(unit_id):
+    data = request.get_json()
+    unit = Units.query.get(unit_id)
+    
+    if not unit:
+        return jsonify({'error': 'Unit not found'}), 404
+    
+    # Update fields
+    for key, value in data.items():
+        if hasattr(unit, key):
+            setattr(unit, key, value)
+    
     db.session.commit()
-    return '', 204
+    return jsonify(unit.to_dict()), 200
+
+# Delete Unit
+@app.route('/units/<int:unit_id>', methods=['DELETE'])
+def delete_unit(unit_id):
+    unit = Units.query.get(unit_id)
+    
+    if not unit:
+        return jsonify({'error': 'Unit not found'}), 404
+    
+    db.session.delete(unit)
+    db.session.commit()
+    return jsonify({'message': 'Unit deleted successfully'}), 200
 
 # ------- LEASES -------
 @app.route('/leases', methods=['POST'])
