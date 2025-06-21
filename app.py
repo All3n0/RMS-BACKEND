@@ -1,8 +1,8 @@
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from flask import Blueprint, Flask, json, request, jsonify, session
 from flask_sqlalchemy import SQLAlchemy
-from sqlalchemy import extract, func
+from sqlalchemy import extract, func, or_
 from flask_marshmallow import Marshmallow
 from flask_migrate import Migrate
 from flask_cors import CORS
@@ -728,42 +728,138 @@ def recover_password():
 @app.route('/admin/stats/<int:admin_id>', methods=['GET'])
 def get_admin_stats(admin_id):
     try:
-        # Count properties for this admin
+        # Validate admin exists
+        admin = Admin.query.get(admin_id)
+        if not admin:
+            return jsonify({'error': 'Admin not found'}), 404
+
+        # Count properties
         property_count = db.session.query(func.count(Properties.id))\
             .filter(Properties.admin_id == admin_id)\
-            .scalar()
+            .scalar() or 0
         
-        # Count ALL units for this admin
+        # Count all units
         total_units = db.session.query(func.count(Units.unit_id))\
             .join(Properties)\
             .filter(Properties.admin_id == admin_id)\
-            .scalar()
+            .scalar() or 0
         
-        # Count only occupied units for this admin
+        # Count occupied units
         occupied_units = db.session.query(func.count(Units.unit_id))\
             .join(Properties)\
             .filter(
                 Properties.admin_id == admin_id,
                 Units.status == 'occupied'
             )\
-            .scalar()
+            .scalar() or 0
         
-        # Calculate potential revenue from all units
+        # Calculate potential revenue
         potential_revenue = db.session.query(func.sum(Units.monthly_rent))\
             .join(Properties)\
             .filter(Properties.admin_id == admin_id)\
             .scalar() or 0
         
+        # Count active tenants
+        active_tenants = db.session.query(func.count(Tenants.id))\
+            .join(Leases, Leases.tenant_id == Tenants.id)\
+            .filter(
+                Tenants.admin_id == admin_id,
+                Leases.lease_status == 'active'
+            )\
+            .scalar() or 0
+        
+        # Calculate collected rent (current month)
+        current_month = datetime.now().month
+        current_year = datetime.now().year
+        
+        collected_rent = db.session.query(func.sum(RentPayments.amount))\
+            .filter(
+                RentPayments.admin_id == admin_id,
+                RentPayments.status == 'paid',
+                extract('month', RentPayments.payment_date) == current_month,
+                extract('year', RentPayments.payment_date) == current_year
+            )\
+            .scalar() or 0
+        
+        # Calculate outstanding payments
+        outstanding_query = db.session.query(
+            func.sum(Leases.monthly_rent - func.coalesce(
+                db.session.query(func.sum(RentPayments.amount))
+                .filter(
+                    RentPayments.lease_id == Leases.lease_id,
+                    extract('month', RentPayments.payment_date) == current_month,
+                    extract('year', RentPayments.payment_date) == current_year
+                )
+                .scalar(), 0)
+            ))\
+            .filter(
+                Leases.admin_id == admin_id,
+                Leases.lease_status == 'active'
+            )\
+            .scalar()
+        
+        outstanding = outstanding_query or 0
+
+        # Recent activity (last 5 maintenance requests)
+        recent_activity = MaintenanceRequests.query\
+            .filter(MaintenanceRequests.admin_id == admin_id)\
+            .order_by(MaintenanceRequests.request_date.desc())\
+            .limit(5)\
+            .all()
+        
+        # Upcoming payments (next 7 days)
+        today = datetime.now()
+        next_week = today + timedelta(days=7)
+        
+        upcoming_payments = db.session.query(Leases, Tenants)\
+            .join(Tenants, Tenants.id == Leases.tenant_id)\
+            .filter(
+                Leases.admin_id == admin_id,
+                Leases.lease_status == 'active',
+                Leases.payment_due_day.between(today.day, next_week.day)
+            )\
+            .all()
+        
+        # Format responses
+        formatted_activity = [{
+            'text': f"Maintenance for {req.lease.unit.unit_name}",
+            'description': req.request_description,
+            'time': req.request_date.strftime('%b %d, %Y'),
+            'status': req.request_status
+        } for req in recent_activity] if recent_activity else []
+        
+        formatted_payments = [{
+            'id': lease.lease_id,
+            'name': f"{tenant.first_name} {tenant.last_name}",
+            'unit': lease.unit.unit_name,
+            'amount': lease.monthly_rent,
+            'status': 'due',
+            'due_date': f"{today.year}-{today.month}-{lease.payment_due_day}"
+        } for lease, tenant in upcoming_payments] if upcoming_payments else []
+
         return jsonify({
-            'property_count': property_count or 0,
-            'total_units': total_units or 0,
-            'occupied_units': occupied_units or 0,
-            'potential_revenue': potential_revenue,
-            'occupancy_rate': round((occupied_units / total_units * 100) if total_units > 0 else 0)
+            'success': True,
+            'data': {
+                'property_count': property_count,
+                'total_units': total_units,
+                'occupied_units': occupied_units,
+                'active_tenants': active_tenants,
+                'potential_revenue': potential_revenue,
+                'collected_rent': collected_rent,
+                'outstanding': outstanding,
+                'occupancy_rate': round((occupied_units / total_units * 100) if total_units > 0 else 0),
+                'recent_activity': formatted_activity,
+                'upcoming_payments': formatted_payments
+            }
         }), 200
         
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        db.session.rollback()
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'message': 'Failed to fetch dashboard data'
+        }), 500
 # === Run the app ===
 if __name__ == '__main__':
     with app.app_context():
