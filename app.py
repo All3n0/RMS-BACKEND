@@ -533,9 +533,117 @@ def create_rent():
     db.session.commit()
     return rent_schema.jsonify(rent), 201
 
-@app.route('/rent_payments', methods=['GET'])
-def get_rents():
-    return rents_schema.jsonify(RentPayments.query.all())
+from flask import request, jsonify
+from sqlalchemy import or_, and_
+from datetime import datetime
+
+@app.route('/admin/rent-payments/<int:admin_id>', methods=['GET'])
+def get_rent_payments(admin_id):
+    try:
+        # Get query parameters
+        search = request.args.get('search', '').strip()
+        tenant_name = request.args.get('tenant_name', '').strip()
+        unit_name = request.args.get('unit_name', '').strip()
+        property_name = request.args.get('property_name', '').strip()
+        reference_number = request.args.get('reference_number', '').strip()
+        status = request.args.get('status', '').strip()
+        start_date = request.args.get('start_date')
+        end_date = request.args.get('end_date')
+        
+        # Base query
+        query = db.session.query(
+            RentPayments,
+            Tenants,
+            Units,
+            Properties
+        ).join(
+            Tenants, Tenants.id == RentPayments.tenant_id
+        ).join(
+            Leases, Leases.lease_id == RentPayments.lease_id
+        ).join(
+            Units, Units.unit_id == Leases.unit_id
+        ).join(
+            Properties, Properties.id == Units.property_id
+        ).filter(
+            RentPayments.admin_id == admin_id
+        )
+        
+        # Apply filters
+        if search:
+            query = query.filter(or_(
+                Tenants.first_name.ilike(f'%{search}%'),
+                Tenants.last_name.ilike(f'%{search}%'),
+                Units.unit_name.ilike(f'%{search}%'),
+                Properties.address.ilike(f'%{search}%'),
+                RentPayments.transaction_reference_number.ilike(f'%{search}%')
+            ))
+        
+        if tenant_name:
+            query = query.filter(or_(
+                Tenants.first_name.ilike(f'%{tenant_name}%'),
+                Tenants.last_name.ilike(f'%{tenant_name}%')
+            ))
+            
+        if unit_name:
+            query = query.filter(Units.unit_name.ilike(f'%{unit_name}%'))
+            
+        if property_name:
+            query = query.filter(Properties.address.ilike(f'%{property_name}%'))
+            
+        if reference_number:
+            query = query.filter(
+                RentPayments.transaction_reference_number.ilike(f'%{reference_number}%')
+            )
+            
+        if status:
+            query = query.filter(RentPayments.status == status)
+            
+        if start_date and end_date:
+            try:
+                start = datetime.strptime(start_date, '%Y-%m-%d').date()
+                end = datetime.strptime(end_date, '%Y-%m-%d').date()
+                query = query.filter(and_(
+                    RentPayments.payment_date >= start,
+                    RentPayments.payment_date <= end
+                ))
+            except ValueError:
+                pass
+                
+        # Execute query
+        results = query.order_by(RentPayments.payment_date.desc()).all()
+        
+        # Format response
+        payments = []
+        for payment, tenant, unit, property in results:
+            payments.append({
+                'id': payment.payment_id,
+                'tenant_name': f"{tenant.first_name} {tenant.last_name}",
+                'tenant_id': tenant.id,
+                'unit_name': unit.unit_name,
+                'unit_id': unit.unit_id,
+                'property_name': property.address,
+                'property_id': property.id,
+                'amount': payment.amount,
+                'payment_date': payment.payment_date.strftime('%Y-%m-%d'),
+                'payment_method': payment.payment_method,
+                'reference_number': payment.transaction_reference_number,
+                'period_start': payment.period_start.strftime('%Y-%m-%d'),
+                'period_end': payment.period_end.strftime('%Y-%m-%d'),
+                'status': payment.status,
+                'lease_id': payment.lease_id
+            })
+            
+        return jsonify({
+            'success': True,
+            'payments': payments,
+            'count': len(payments)
+        }), 200
+        
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
 
 # ------- EXPENSES -------
 @app.route('/expenses', methods=['POST'])
