@@ -403,6 +403,7 @@ def record_payment(unit_id):
         data = request.get_json()
         lease = Leases.query.filter_by(unit_id=unit_id, lease_status='active').first_or_404()
 
+        # Record payment
         payment = RentPayments(
             lease_id=lease.lease_id,
             payment_date=datetime.strptime(data['payment_date'], '%Y-%m-%d'),
@@ -418,13 +419,33 @@ def record_payment(unit_id):
         db.session.add(payment)
         db.session.commit()
 
+        # Rent analysis
+        payments = RentPayments.query.filter_by(lease_id=lease.lease_id).all()
+        total_paid = sum(p.amount for p in payments)
+
+        lease_start = lease.start_date
+        today = datetime.today()
+        months_elapsed = (today.year - lease_start.year) * 12 + today.month - lease_start.month + 1
+        expected_total = months_elapsed * lease.monthly_rent
+        balance = expected_total - total_paid
+        months_paid = total_paid // lease.monthly_rent
+        months_behind = months_elapsed - months_paid
+
         return jsonify({
             'message': 'Payment recorded successfully',
-            'payment': payment.to_dict()
+            'payment': payment.to_dict(),
+            'payment_status': {
+                'total_months': months_elapsed,
+                'expected_total_rent': expected_total,
+                'total_paid': total_paid,
+                'balance_due': balance,
+                'months_behind': months_behind
+            }
         })
     except Exception as e:
         db.session.rollback()
         return jsonify({'error': str(e)}), 500
+
 
 
 @app.route('/units/<int:unit_id>/end-lease', methods=['POST'])
