@@ -329,36 +329,62 @@ def assign_tenant(unit_id):
         data = request.get_json()
         unit = Units.query.get_or_404(unit_id)
 
-        if data.get('tenant_id'):
-            tenant = Tenants.query.get_or_404(data['tenant_id'])
-        else:
-            tenant = Tenants(
-                first_name=data['first_name'],
-                last_name=data['last_name'],
-                email=data['email'],
-                phone=data['phone'],
-                date_of_birth=datetime.strptime(data['date_of_birth'], '%Y-%m-%d'),
-                emergency_contact_name=data['emergency_contact_name'],
-                emergency_contact_number=data['emergency_contact_number'],
-                move_in_date=datetime.strptime(data['move_in_date'], '%Y-%m-%d'),
-                admin_id=data['admin_id']
-            )
-            db.session.add(tenant)
+        # Validate required fields
+        if not data.get('tenant_id') and not all(field in data for field in [
+            'first_name', 'last_name', 'email', 'phone', 'date_of_birth',
+            'emergency_contact_name', 'emergency_contact_number', 'move_in_date'
+        ]):
+            return jsonify({'error': 'Either tenant_id or complete tenant details required'}), 400
 
+        # Handle tenant creation/lookup
+        if data.get('tenant_id'):
+            tenant = Tenants.query.get(data['tenant_id'])
+            if not tenant:
+                return jsonify({'error': 'Tenant not found'}), 404
+        else:
+            try:
+                tenant = Tenants(
+                    first_name=data['first_name'],
+                    last_name=data['last_name'],
+                    email=data['email'],
+                    phone=data['phone'],
+                    date_of_birth=datetime.strptime(data['date_of_birth'], '%Y-%m-%d').date(),
+                    emergency_contact_name=data['emergency_contact_name'],
+                    emergency_contact_number=data['emergency_contact_number'],
+                    move_in_date=datetime.strptime(data['move_in_date'], '%Y-%m-%d').date(),
+                    admin_id=data['admin_id']
+                )
+                db.session.add(tenant)
+                db.session.flush()  # Get the tenant ID before commit
+            except ValueError as e:
+                return jsonify({'error': f'Invalid date format: {str(e)}'}), 400
+            except KeyError as e:
+                return jsonify({'error': f'Missing required field: {str(e)}'}), 400
+
+        # Date validation
+        lease_start = datetime.strptime(data['lease_start'], '%Y-%m-%d').date()
+        lease_end = datetime.strptime(data['lease_end'], '%Y-%m-%d').date()
+
+        if lease_end <= lease_start:
+            return jsonify({'error': 'Lease end date must be after start date'}), 400
+
+        if not (1 <= int(data.get('payment_due_day', 1)) <= 28):
+            return jsonify({'error': 'Payment due day must be between 1 and 28'}), 400
+        
+        # Create lease
         lease = Leases(
-            tenant_id=tenant.id,
+            tenant_id=tenant.id,  # Now guaranteed to have a value
             unit_id=unit_id,
-            start_date=datetime.strptime(data['lease_start'], '%Y-%m-%d'),
-            end_date=datetime.strptime(data['lease_end'], '%Y-%m-%d'),
+            start_date=lease_start,
+            end_date=lease_end,
             monthly_rent=unit.monthly_rent,
             deposit_amount=unit.deposit_amount,
             lease_status='active',
             property_id=unit.property_id,
             admin_id=data['admin_id'],
-            payment_due_day=data.get('payment_due_day', 1)
+            payment_due_day=int(data.get('payment_due_day', 1))
         )
         db.session.add(lease)
-
         unit.status = 'occupied'
         db.session.commit()
 
@@ -370,7 +396,6 @@ def assign_tenant(unit_id):
     except Exception as e:
         db.session.rollback()
         return jsonify({'error': str(e)}), 500
-
 
 @app.route('/units/<int:unit_id>/record-payment', methods=['POST'])
 def record_payment(unit_id):

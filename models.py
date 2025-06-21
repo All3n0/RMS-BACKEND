@@ -90,10 +90,24 @@ class Leases(db.Model):
     property_id = db.Column(db.Integer, db.ForeignKey('properties.id'), nullable=False)
     admin_id = db.Column(db.Integer, db.ForeignKey('admin.admin_id'), nullable=False)
     # lease_documents = db.relationship('LeaseDocuments', backref='lease', lazy=True)
-    payment_due_day = db.Column(db.Date, nullable=False)
+    payment_due_day = db.Column(db.Integer, nullable=False)
     payments=db.relationship('RentPayments', backref='lease', lazy=True)
     unit=db.relationship('Units', backref='lease', lazy=True)
-
+    
+    def to_dict(self):
+        return {
+            'lease_id': self.lease_id,
+            'tenant_id': self.tenant_id,
+            'unit_id': self.unit_id,
+            'start_date': self.start_date,
+            'end_date': self.end_date,
+            'monthly_rent': self.monthly_rent,
+            'deposit_amount': self.deposit_amount,
+            'lease_status': self.lease_status,
+            'property_id': self.property_id,
+            'admin_id': self.admin_id,
+            'payment_due_day': self.payment_due_day
+        }
 class RentPayments(db.Model):
     payment_id = db.Column(db.Integer, primary_key=True)
     lease_id = db.Column(db.Integer, db.ForeignKey('leases.lease_id'), nullable=False)
