@@ -1,6 +1,6 @@
 import os
 from datetime import datetime, timedelta
-from flask import Blueprint, Flask, json, request, jsonify, session
+from flask import Blueprint, Flask, json, make_response, request, jsonify, session
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import extract, func, or_
 from flask_marshmallow import Marshmallow
@@ -229,22 +229,49 @@ def update_property(property_id):
 @app.route('/properties/<int:property_id>', methods=['DELETE'])
 def delete_property(property_id):
     try:
-        property = Properties.query.get(property_id)
+        # Start a transaction
+        db.session.begin_nested()
         
+        property = Properties.query.get(property_id)
         if not property:
             return jsonify({'error': 'Property not found'}), 404
+
+        # Get all units in this property
+        units = Units.query.filter_by(property_id=property_id).all()
         
-        # First delete all associated units
-        Units.query.filter_by(property_id=property_id).delete()
+        for unit in units:
+            # Handle all leases for this unit
+            leases = Leases.query.filter_by(unit_id=unit.unit_id).all()
+            
+            for lease in leases:
+                # Option 1: Delete associated rent payments
+                RentPayments.query.filter_by(lease_id=lease.lease_id).delete()
+                
+                # Option 2: Orphan the payments (if you want to keep payment records)
+                # RentPayments.query.filter_by(lease_id=lease.lease_id).update(
+                #     {'lease_id': None}, synchronize_session=False
+                # )
+                
+                # Delete the lease
+                db.session.delete(lease)
+            
+            # Delete the unit
+            db.session.delete(unit)
         
-        # Then delete the property
+        # Finally delete the property
         db.session.delete(property)
         db.session.commit()
         
-        return jsonify({'message': 'Property and all its units deleted successfully'}), 200
+        return jsonify({
+            'message': 'Property deleted successfully with all associated units, leases, and payments'
+        }), 200
+
     except Exception as e:
         db.session.rollback()
-        return jsonify({'error': str(e)}), 500
+        return jsonify({
+            'error': f'Failed to delete property: {str(e)}',
+            'solution': 'Ensure all related records are properly handled before deletion'
+        }), 500
 # ------- UNITS -------
 # app.py or routes.py
 
@@ -341,8 +368,32 @@ def assign_tenant(unit_id):
             tenant = Tenants.query.get(data['tenant_id'])
             if not tenant:
                 return jsonify({'error': 'Tenant not found'}), 404
+            
+            # Verify the tenant has a corresponding user
+            user = Users.query.filter_by(email=tenant.email).first()
+            if not user:
+                # Create user if doesn't exist
+                user = Users(
+                    username=tenant.email,
+                    email=tenant.email,
+                    password=tenant.password,  # Should be hashed already
+                    role='tenant',
+                    is_active=True
+                )
+                db.session.add(user)
         else:
+            # Validate email doesn't exist in either table
+            if Tenants.query.filter_by(email=data['email']).first():
+                return jsonify({'error': 'Email already exists in tenants table'}), 400
+            if Users.query.filter_by(email=data['email']).first():
+                return jsonify({'error': 'Email already exists in users table'}), 400
+
             try:
+                # Create password and hash it
+                default_password = f"{data['first_name'].lower().replace(' ', '')}@123"
+                hashed_password = generate_password_hash(default_password)
+                
+                # Create tenant
                 tenant = Tenants(
                     first_name=data['first_name'],
                     last_name=data['last_name'],
@@ -352,16 +403,28 @@ def assign_tenant(unit_id):
                     emergency_contact_name=data['emergency_contact_name'],
                     emergency_contact_number=data['emergency_contact_number'],
                     move_in_date=datetime.strptime(data['move_in_date'], '%Y-%m-%d').date(),
-                    admin_id=data['admin_id']
+                    admin_id=data['admin_id'],
+                    password=hashed_password
                 )
                 db.session.add(tenant)
                 db.session.flush()  # Get the tenant ID before commit
+                
+                # Create corresponding user account (without tenant_id)
+                user = Users(
+                    username=data['email'],  # Using email as username
+                    email=data['email'],
+                    password=hashed_password,
+                    role='tenant',
+                    is_active=True
+                )
+                db.session.add(user)
+                
             except ValueError as e:
                 return jsonify({'error': f'Invalid date format: {str(e)}'}), 400
             except KeyError as e:
                 return jsonify({'error': f'Missing required field: {str(e)}'}), 400
 
-        # Date validation
+        # Validate lease dates
         lease_start = datetime.strptime(data['lease_start'], '%Y-%m-%d').date()
         lease_end = datetime.strptime(data['lease_end'], '%Y-%m-%d').date()
 
@@ -373,7 +436,7 @@ def assign_tenant(unit_id):
         
         # Create lease
         lease = Leases(
-            tenant_id=tenant.id,  # Now guaranteed to have a value
+            tenant_id=tenant.id,
             unit_id=unit_id,
             start_date=lease_start,
             end_date=lease_end,
@@ -386,11 +449,13 @@ def assign_tenant(unit_id):
         )
         db.session.add(lease)
         unit.status = 'occupied'
+        
         db.session.commit()
 
         return jsonify({
             'message': 'Tenant assigned successfully',
             'tenant': tenant.to_dict(),
+            'user': user.to_dict(),
             'lease': lease.to_dict()
         })
     except Exception as e:
@@ -756,38 +821,70 @@ def register():
 # -------------------- LOGIN --------------------
 @app.route('/login', methods=['POST'])
 def login():
-    data = request.json
-    user = Users.query.filter_by(email=data['email']).first()
+    print("Received login request")  # Debug log
+    print("Request headers:", request.headers)  # Debug log
+    print("Request data:", request.data)  # Debug log
+    
+    try:
+        data = request.get_json()
+        print("Parsed JSON data:", data)  # Debug log
+        
+        if not data:
+            print("Error: No data received")  # Debug log
+            return jsonify({'error': 'No data received'}), 400
+            
+        if 'email' not in data or 'password' not in data:
+            print("Error: Missing email or password")  # Debug log
+            return jsonify({'error': 'Email and password are required'}), 400
+            
+        print(f"Looking for user with email: {data['email']}")  # Debug log
+        user = Users.query.filter_by(email=data['email']).first()
+        
+        if not user:
+            print("Error: User not found")  # Debug log
+            return jsonify({'error': 'Invalid email or password'}), 401
+            
+        print("User found, checking password")  # Debug log
+        if not check_password_hash(user.password, data['password']):
+            print("Error: Password mismatch")  # Debug log
+            return jsonify({'error': 'Invalid email or password'}), 401
+            
+        print("Login successful")  # Debug log
 
-    if not user or not check_password_hash(user.password, data['password']):
-        return jsonify({'error': 'Invalid email or password'}), 401
+        user.last_login = datetime.utcnow()
+        db.session.commit()
 
-    user.last_login = datetime.utcnow()
-    db.session.commit()
-
-    session['user_id'] = user.user_id
-
-    resp = jsonify({
-        'message': 'Login successful',
-        'user': {
+        user_data = {
             'user_id': user.user_id,
             'username': user.username,
             'email': user.email,
-            'role': user.role
+            'role': user.role,
+            'is_active': user.is_active
         }
-    })
 
-    # 🔥 Set cookie with key = 'user' to match your Next.js logic
-    resp.set_cookie('user', json.dumps({
-    'user_id': user.user_id,
-    'username': user.username,
-    'role': user.role,
-    'email': user.email
-}), httponly=True)
+        # Create response
+        response_data = {
+            'message': 'Login successful',
+            'user': user_data  # This matches the frontend expectation
+        }
 
+        response = make_response(jsonify(response_data))
 
-    return resp
+        # Set HttpOnly cookie (secure in production)
+        response.set_cookie(
+            'user',
+            value=json.dumps(user_data),  # Store just the user_data in cookie
+            httponly=True,
+            secure=app.config.get('ENV') == 'production',
+            samesite='Strict',
+            max_age=604800  # 7 days
+        )
 
+        return response
+
+    except Exception as e:
+        print("Error in login endpoint:", str(e))  # Debug log
+        return jsonify({'error': 'Internal server error'}), 500
 
 # -------------------- LOGOUT --------------------
 @app.route('/logout', methods=['POST'])

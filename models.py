@@ -4,13 +4,14 @@ class Tenants(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     first_name = db.Column(db.String(50), nullable=False)
     last_name = db.Column(db.String(50), nullable=False)
-    email = db.Column(db.String(50), nullable=False)
+    email = db.Column(db.String(50), nullable=False, unique=True)
     phone = db.Column(db.String(50), nullable=False)
     date_of_birth = db.Column(db.Date, nullable=False)
     emergency_contact_name = db.Column(db.String(50), nullable=False)
     emergency_contact_number= db.Column(db.String(50), nullable=False)
     move_in_date = db.Column(db.Date, nullable=False)
     move_out_date = db.Column(db.Date, nullable=True)
+    password = db.Column(db.String(50), nullable=False)
     leases=db.relationship('Leases', backref='tenant', lazy=True)
     payments = db.relationship('RentPayments', backref='payment_tenant', lazy=True, foreign_keys='RentPayments.tenant_id')
     admin_id = db.Column(db.Integer, db.ForeignKey('admin.admin_id'), nullable=False)
@@ -158,9 +159,19 @@ class Users(db.Model):
     __tablename__ = 'users'
     user_id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(50), nullable=False)
-    email = db.Column(db.String(50), nullable=False,server_default='xxx')
-    password = db.Column(db.String(50), nullable=False)
+    email = db.Column(db.String(50), nullable=False,server_default='xxx', unique=True)
+    password = db.Column(db.String(255), nullable=False)
     role = db.Column(db.String(50), nullable=False)
     last_login = db.Column(db.DateTime, nullable=True)
-    is_active = db.Column(db.Boolean, nullable=False)
+    is_active = db.Column(db.Boolean, nullable=False, default=True)
 
+    def to_dict(self):
+        return {
+            'user_id': self.user_id,
+            'username': self.username,
+            'email': self.email,
+            'password': self.password,
+            'role': self.role,
+            'last_login': self.last_login,
+            'is_active': self.is_active
+        }
