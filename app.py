@@ -709,7 +709,53 @@ def get_rent_payments(admin_id):
             'success': False,
             'error': str(e)
         }), 500
-
+@app.route('/admin/rent-payments/<int:admin_id>/stats', methods=['GET'])
+def get_rent_stats(admin_id):
+    try:
+        # Get current month's start and end dates
+        today = datetime.today()
+        first_day = today.replace(day=1)
+        last_day = (first_day + timedelta(days=32)).replace(day=1) - timedelta(days=1)
+        
+        # Query for total expected rent (sum of all active leases)
+        expected_rent = db.session.query(
+            func.sum(Leases.monthly_rent)
+        ).filter(
+            Leases.admin_id == admin_id,
+            Leases.start_date <= last_day,
+            or_(
+                Leases.end_date >= first_day,
+                Leases.end_date == None  # Ongoing leases
+            )
+        ).scalar() or 0
+        
+        # Query for collected rent in current month
+        collected_rent = db.session.query(
+            func.sum(RentPayments.amount)
+        ).filter(
+            RentPayments.admin_id == admin_id,
+            RentPayments.payment_date >= first_day,
+            RentPayments.payment_date <= today,
+            RentPayments.status == 'paid'
+        ).scalar() or 0
+        
+        # Calculate percentage (avoid division by zero)
+        percentage = 0
+        if expected_rent > 0:
+            percentage = round((collected_rent / expected_rent) * 100)
+        
+        return jsonify({
+            'success': True,
+            'collected': float(collected_rent),
+            'expected': float(expected_rent),
+            'percentage': percentage
+        }), 200
+        
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
 # ------- EXPENSES -------
 @app.route('/expenses', methods=['POST'])
 def create_expense():
