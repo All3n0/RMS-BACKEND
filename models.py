@@ -31,6 +31,7 @@ class Tenants(db.Model):
         }
 class Properties(db.Model):
     id = db.Column(db.Integer, primary_key=True)
+    property_name=db.Column(db.String(50), nullable=False)
     address = db.Column(db.String(50), nullable=False)
     city = db.Column(db.String(50), nullable=False)
     state = db.Column(db.String(50), nullable=False)
@@ -40,6 +41,8 @@ class Properties(db.Model):
 
     units = db.relationship('Units', backref='property', lazy=True)
     leases = db.relationship('Leases', backref='property', lazy=True)
+
+
 
 class Admin(db.Model):
     admin_id = db.Column(db.Integer, primary_key=True)
