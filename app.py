@@ -246,6 +246,71 @@ def tenant_dashboard():
     except Exception as e:
         print("💥 Error in /tenant-dashboard:", str(e))
         return jsonify({'error': 'Server error'}), 500
+@app.route('/tenant-leases', methods=['GET'])
+def tenant_leases():
+    try:
+        import urllib.parse
+
+        print("🔍 Incoming request to /tenant-leases")
+
+        # 1. Check session cookie
+        session_cookie = request.cookies.get('user')
+        if not session_cookie:
+            print("❌ No session cookie found")
+            return jsonify({'error': 'Authentication required'}), 401
+
+        decoded_cookie = urllib.parse.unquote(session_cookie)
+        session_data = json.loads(decoded_cookie)
+
+        email = session_data.get('email')
+        role = session_data.get('role')
+
+        if not email or role != 'tenant':
+            print("🚫 Unauthorized access")
+            return jsonify({'error': 'Unauthorized access'}), 403
+
+        # 2. Get tenant
+        tenant = Tenants.query.filter_by(email=email).first()
+        if not tenant:
+            print("❌ Tenant not found")
+            return jsonify({'error': 'Tenant not found'}), 404
+
+        print(f"👤 Tenant: {tenant.first_name} {tenant.last_name} (ID={tenant.id})")
+
+        # 3. Get all leases for tenant
+        leases = Leases.query.filter_by(tenant_id=tenant.id).order_by(Leases.start_date.desc()).all()
+        print(f"📄 Found {len(leases)} lease(s)")
+
+        # 4. Build response
+        lease_data = []
+        for lease in leases:
+            unit = Units.query.get(lease.unit_id)
+            property = Properties.query.get(lease.property_id)
+
+            lease_data.append({
+                'lease_id': lease.lease_id,
+                'start_date': lease.start_date.strftime('%Y-%m-%d'),
+                'end_date': lease.end_date.strftime('%Y-%m-%d'),
+                'monthly_rent': lease.monthly_rent,
+                'deposit_amount': lease.deposit_amount,
+                'lease_status': lease.lease_status,
+                'unit': {
+                    'unit_name': unit.unit_name if unit else None,
+                    'type': unit.type if unit else None,
+                    'unit_number': unit.unit_number if unit else None,
+                } if unit else None,
+                'property': {
+                    'property_name': property.property_name if property else None,
+                    'address': f"{property.address}, {property.city}, {property.state} {property.zip_code}" if property else None
+                } if property else None,
+            })
+
+        print("✅ Lease history response ready")
+        return jsonify({'leases': lease_data}), 200
+
+    except Exception as e:
+        print("💥 Error in /tenant-leases:", str(e))
+        return jsonify({'error': 'Server error'}), 500
 
 @app.route('/tenants', methods=['GET'])
 def get_tenants():
