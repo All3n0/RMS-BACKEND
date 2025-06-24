@@ -350,6 +350,121 @@ def tenant_payment_history():
     except Exception as e:
         print("💥 Error in /tenant-payments:", str(e))
         return jsonify({'error': 'Server error'}), 500
+@app.route('/tenant-profile', methods=['GET'])
+def get_tenant_profile():
+    try:
+        import urllib.parse
+        session_cookie = request.cookies.get('user')
+        if not session_cookie:
+            return jsonify({'error': 'Authentication required'}), 401
+
+        decoded_cookie = urllib.parse.unquote(session_cookie)
+        session_data = json.loads(decoded_cookie)
+        email = session_data.get('email')
+        role = session_data.get('role')
+
+        if not email or role != 'tenant':
+            return jsonify({'error': 'Unauthorized'}), 403
+
+        tenant = Tenants.query.filter_by(email=email).first()
+        if not tenant:
+            return jsonify({'error': 'Tenant not found'}), 404
+
+        profile = {
+            'first_name': tenant.first_name,
+            'last_name': tenant.last_name,
+            'email': tenant.email,
+            'phone': tenant.phone,
+            'emergency_contact_name': tenant.emergency_contact_name,
+            'emergency_contact_number': tenant.emergency_contact_number,
+        }
+
+        return jsonify(profile), 200
+
+    except Exception as e:
+        print("Error in get_tenant_profile:", str(e))
+        return jsonify({'error': 'Server error'}), 500
+@app.route('/tenant-profile/update', methods=['PUT'])
+def update_tenant_profile():
+    try:
+        import urllib.parse
+        session_cookie = request.cookies.get('user')
+        if not session_cookie:
+            return jsonify({'error': 'Authentication required'}), 401
+
+        decoded_cookie = urllib.parse.unquote(session_cookie)
+        session_data = json.loads(decoded_cookie)
+        email = session_data.get('email')
+        role = session_data.get('role')
+
+        if not email or role != 'tenant':
+            return jsonify({'error': 'Unauthorized'}), 403
+
+        tenant = Tenants.query.filter_by(email=email).first()
+        if not tenant:
+            return jsonify({'error': 'Tenant not found'}), 404
+
+        data = request.get_json()
+        tenant.first_name = data.get('first_name', tenant.first_name)
+        tenant.last_name = data.get('last_name', tenant.last_name)
+        tenant.phone = data.get('phone', tenant.phone)
+        tenant.emergency_contact_name = data.get('emergency_contact_name', tenant.emergency_contact_name)
+        tenant.emergency_contact_number = data.get('emergency_contact_number', tenant.emergency_contact_number)
+
+        db.session.commit()
+
+        return jsonify({'message': 'Profile updated successfully'}), 200
+
+    except Exception as e:
+        print("Error in update_tenant_profile:", str(e))
+        return jsonify({'error': 'Server error'}), 500
+@app.route('/tenant-profile/change-password', methods=['PUT'])
+def change_tenant_password():
+    try:
+        import urllib.parse
+
+        data = request.get_json()
+        current_password = data.get('current_password')
+        new_password = data.get('new_password')
+
+        # Step 1: Decode session
+        session_cookie = request.cookies.get('user')
+        if not session_cookie:
+            return jsonify({'error': 'Authentication required'}), 401
+
+        decoded_cookie = urllib.parse.unquote(session_cookie)
+        session_data = json.loads(decoded_cookie)
+
+        email = session_data.get('email')
+        role = session_data.get('role')
+
+        if not email or role != 'tenant':
+            return jsonify({'error': 'Unauthorized access'}), 403
+
+        # Step 2: Get tenant by email
+        tenant = Tenants.query.filter_by(email=email).first()
+        if not tenant:
+            return jsonify({'error': 'Tenant not found'}), 404
+
+        # Step 3: Get user account by tenant email
+        user = Users.query.filter_by(email=tenant.email).first()
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
+
+        # Step 4: Validate current password
+        if not check_password_hash(user.password, current_password):
+            return jsonify({'error': 'Incorrect current password'}), 400
+
+        # Step 5: Update to new hashed password
+        user.password = generate_password_hash(new_password)
+        db.session.commit()
+
+        return jsonify({'message': 'Password updated successfully'}), 200
+
+    except Exception as e:
+        print("💥 Error changing password:", str(e))
+        return jsonify({'error': 'Server error'}), 500
+
 
 @app.route('/tenants', methods=['GET'])
 def get_tenants():
