@@ -311,6 +311,45 @@ def tenant_leases():
     except Exception as e:
         print("💥 Error in /tenant-leases:", str(e))
         return jsonify({'error': 'Server error'}), 500
+@app.route('/tenant-payments', methods=['GET'])
+def tenant_payment_history():
+    try:
+        import urllib.parse
+
+        session_cookie = request.cookies.get('user')
+        if not session_cookie:
+            return jsonify({'error': 'Authentication required'}), 401
+
+        decoded_cookie = urllib.parse.unquote(session_cookie)
+        session_data = json.loads(decoded_cookie)
+        email = session_data.get('email')
+        role = session_data.get('role')
+
+        if not email or role != 'tenant':
+            return jsonify({'error': 'Unauthorized access'}), 403
+
+        tenant = Tenants.query.filter_by(email=email).first()
+        if not tenant:
+            return jsonify({'error': 'Tenant not found'}), 404
+
+        payments = RentPayments.query.filter_by(tenant_id=tenant.id)\
+            .order_by(RentPayments.payment_date.desc()).all()
+
+        payment_list = [{
+            'payment_id': p.payment_id,
+            'payment_date': p.payment_date.strftime('%Y-%m-%d'),
+            'amount': p.amount,
+            'payment_method': p.payment_method,
+            'status': p.status,
+            'period_start': p.period_start.strftime('%Y-%m-%d'),
+            'period_end': p.period_end.strftime('%Y-%m-%d')
+        } for p in payments]
+
+        return jsonify({'payments': payment_list}), 200
+
+    except Exception as e:
+        print("💥 Error in /tenant-payments:", str(e))
+        return jsonify({'error': 'Server error'}), 500
 
 @app.route('/tenants', methods=['GET'])
 def get_tenants():
