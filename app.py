@@ -8,6 +8,7 @@ from flask_migrate import Migrate
 from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
 from dotenv import load_dotenv
+from json import JSONDecodeError
 import re
 load_dotenv()
 
@@ -113,6 +114,138 @@ def create_tenant():
     db.session.add(tenant)
     db.session.commit()
     return tenant_schema.jsonify(tenant), 201
+@app.route('/tenant-dashboard', methods=['GET'])
+def tenant_dashboard():
+    try:
+        import urllib.parse
+
+        print("🔍 Incoming request to /tenant-dashboard")
+
+        # 1. Get and decode session cookie
+        session_cookie = request.cookies.get('user')
+        if not session_cookie:
+            print("❌ No session cookie found")
+            return jsonify({'error': 'Authentication required'}), 401
+
+        decoded_cookie = urllib.parse.unquote(session_cookie)
+        session_data = json.loads(decoded_cookie)
+
+        email = session_data.get('email')
+        role = session_data.get('role')
+
+        print(f"🔑 Decoded session: email={email}, role={role}")
+        if not email or role != 'tenant':
+            print("🚫 Unauthorized access")
+            return jsonify({'error': 'Unauthorized access'}), 403
+
+        # 2. Get tenant info using email
+        tenant = Tenants.query.filter_by(email=email).first()
+        if not tenant:
+            print("❌ Tenant not found for email")
+            return jsonify({'error': 'Tenant not found'}), 404
+
+        print(f"👤 Tenant found: {tenant.first_name} {tenant.last_name} (ID={tenant.id})")
+
+        # 3. Get lease
+        lease = Leases.query.filter_by(tenant_id=tenant.id, lease_status='active').first()
+        if lease:
+            print(f"📄 Active lease found: ID={lease.lease_id}, property_id={lease.property_id}, unit_id={lease.unit_id}")
+        else:
+            print("ℹ️ No active lease found")
+
+        # 4. Get unit
+        unit = Units.query.get(lease.unit_id) if lease else None
+        if unit:
+            print(f"🏠 Unit: {unit.unit_name} ({unit.type}) - #{unit.unit_number}")
+        else:
+            print("⚠️ Unit not found or no lease")
+
+        # 5. Get property
+        property = Properties.query.get(lease.property_id) if lease else None
+        if property:
+            print(f"🏢 Property: {property.property_name}, {property.address}")
+        else:
+            print("⚠️ Property not found or no lease")
+
+        # 6. Get recent payments
+        payments = RentPayments.query.filter_by(tenant_id=tenant.id)\
+            .order_by(RentPayments.payment_date.desc()).limit(5).all()
+        print(f"💰 Retrieved {len(payments)} recent payment(s)")
+
+        # 7. Check current month payment
+        today = datetime.now().date()
+        first_of_month = today.replace(day=1)
+        first_next_month = (first_of_month + timedelta(days=32)).replace(day=1)
+
+        current_month_paid = RentPayments.query.filter(
+            RentPayments.tenant_id == tenant.id,
+            RentPayments.period_start >= first_of_month,
+            RentPayments.period_end < first_next_month,
+            func.lower(RentPayments.status) == 'paid'
+        ).first() is not None
+        print(f"📆 Current month rent paid: {current_month_paid}")
+
+        # 8. Calculate next payment date
+        next_payment_date = None
+        if lease and lease.payment_due_day:
+            try:
+                next_payment_date = today.replace(day=lease.payment_due_day)
+                if next_payment_date < today:
+                    next_payment_date = (next_payment_date + timedelta(days=32)).replace(day=lease.payment_due_day)
+                print(f"📅 Next payment due on: {next_payment_date}")
+            except ValueError:
+                print("⚠️ Invalid payment_due_day in lease")
+
+        # 9. Build response
+        response = {
+            'tenant': {
+                'first_name': tenant.first_name,
+                'last_name': tenant.last_name,
+                'email': tenant.email,
+                'phone': tenant.phone,
+                'emergency_contact_name': tenant.emergency_contact_name,
+                'emergency_contact_number': tenant.emergency_contact_number
+            },
+            'unit': {
+                'unit_name': unit.unit_name if unit else None,
+                'type': unit.type if unit else None,
+                'unit_number': unit.unit_number if unit else None,
+                'monthly_rent': unit.monthly_rent if unit else None
+            } if unit else None,
+            'property': {
+                'property_name': property.property_name if property else None,
+                'address': f"{property.address}, {property.city}, {property.state} {property.zip_code}" if property else None
+            } if property else None,
+            'lease': {
+                'start_date': lease.start_date.strftime('%Y-%m-%d') if lease else None,
+                'end_date': lease.end_date.strftime('%Y-%m-%d') if lease else None,
+                'monthly_rent': lease.monthly_rent if lease else None,
+                'deposit_amount': lease.deposit_amount if lease else None,
+                'payment_due_day': lease.payment_due_day if lease else None,
+                'lease_status': lease.lease_status if lease else 'inactive'
+            } if lease else None,
+            'payments': [{
+                'payment_id': p.payment_id,
+                'payment_date': p.payment_date.strftime('%Y-%m-%d'),
+                'amount': p.amount,
+                'payment_method': p.payment_method,
+                'status': p.status,
+                'period_start': p.period_start.strftime('%Y-%m-%d'),
+                'period_end': p.period_end.strftime('%Y-%m-%d')
+            } for p in payments],
+            'payment_status': {
+                'current_month_paid': current_month_paid,
+                'next_payment_date': next_payment_date.strftime('%Y-%m-%d') if next_payment_date else None,
+                'last_payment_date': payments[0].payment_date.strftime('%Y-%m-%d') if payments else None
+            }
+        }
+
+        print("✅ Dashboard response ready")
+        return jsonify(response), 200
+
+    except Exception as e:
+        print("💥 Error in /tenant-dashboard:", str(e))
+        return jsonify({'error': 'Server error'}), 500
 
 @app.route('/tenants', methods=['GET'])
 def get_tenants():
