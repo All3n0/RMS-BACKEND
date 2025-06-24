@@ -1185,6 +1185,126 @@ def get_expenses():
     return expenses_schema.jsonify(Expenses.query.all())
 
 # ------- MAINTENANCE REQUESTS -------
+@app.route('/tenant/maintenance', methods=['POST'])
+def schedule_maintenance():
+    try:
+        import urllib.parse
+
+        session_cookie = request.cookies.get('user')
+        if not session_cookie:
+            return jsonify({'error': 'Authentication required'}), 401
+
+        session_data = json.loads(urllib.parse.unquote(session_cookie))
+        email = session_data.get('email')
+        role = session_data.get('role')
+
+        if role != 'tenant':
+            return jsonify({'error': 'Unauthorized'}), 403
+
+        tenant = Tenants.query.filter_by(email=email).first()
+        if not tenant:
+            return jsonify({'error': 'Tenant not found'}), 404
+
+        # Get active lease
+        lease = Leases.query.filter_by(tenant_id=tenant.id, lease_status='active').first()
+        if not lease:
+            return jsonify({'error': 'No active lease found'}), 404
+
+        data = request.get_json()
+
+        new_request = MaintenanceRequests(
+            lease_id=lease.lease_id,
+            tenant_id=tenant.id,
+            admin_id=tenant.admin_id,
+            request_date=datetime.now().date(),
+            request_description=data.get('request_description'),
+            request_status='pending',
+            request_priority='secondary',  # default
+            cost=None  # editable by admin later
+        )
+
+        db.session.add(new_request)
+        db.session.commit()
+
+        return jsonify({'message': 'Maintenance request submitted successfully'}), 201
+
+    except Exception as e:
+        print("💥 Error scheduling maintenance:", str(e))
+        return jsonify({'error': 'Server error'}), 500
+@app.route('/tenant/maintenance', methods=['GET'])
+def get_tenant_maintenance_requests():
+    try:
+        import urllib.parse
+
+        session_cookie = request.cookies.get('user')
+        if not session_cookie:
+            return jsonify({'error': 'Authentication required'}), 401
+
+        session_data = json.loads(urllib.parse.unquote(session_cookie))
+        email = session_data.get('email')
+        role = session_data.get('role')
+
+        if role != 'tenant':
+            return jsonify({'error': 'Unauthorized'}), 403
+
+        tenant = Tenants.query.filter_by(email=email).first()
+        if not tenant:
+            return jsonify({'error': 'Tenant not found'}), 404
+
+        requests = MaintenanceRequests.query.filter_by(tenant_id=tenant.id).order_by(MaintenanceRequests.request_date.desc()).all()
+
+        return jsonify([{
+            'request_id': r.request_id,
+            'request_date': r.request_date.strftime('%Y-%m-%d'),
+            'request_description': r.request_description,
+            'request_status': r.request_status,
+            'request_priority': r.request_priority,
+            'cost': r.cost
+        } for r in requests]), 200
+
+    except Exception as e:
+        print("💥 Error retrieving tenant maintenance requests:", str(e))
+        return jsonify({'error': 'Server error'}), 500
+@app.route('/admin/maintenance-requests/<int:admin_id>', methods=['GET'])
+def admin_get_all_requests(admin_id):
+    try:
+        requests = MaintenanceRequests.query.filter_by(admin_id=admin_id).order_by(MaintenanceRequests.request_date.desc()).all()
+
+        return jsonify([{
+            'request_id': r.request_id,
+            'tenant_id': r.tenant_id,
+            'lease_id': r.lease_id,
+            'request_date': r.request_date.strftime('%Y-%m-%d'),
+            'request_description': r.request_description,
+            'request_status': r.request_status,
+            'request_priority': r.request_priority,
+            'cost': r.cost
+        } for r in requests]), 200
+
+    except Exception as e:
+        print("💥 Error retrieving admin maintenance requests:", str(e))
+        return jsonify({'error': 'Server error'}), 500
+@app.route('/admin/maintenance-request/<int:request_id>', methods=['PUT'])
+def update_maintenance_request(request_id):
+    try:
+        data = request.get_json()
+
+        req = MaintenanceRequests.query.get(request_id)
+        if not req:
+            return jsonify({'error': 'Request not found'}), 404
+
+        # Optional fields to update
+        req.request_status = data.get('request_status', req.request_status)
+        req.request_priority = data.get('request_priority', req.request_priority)
+        req.cost = data.get('cost', req.cost)
+
+        db.session.commit()
+        return jsonify({'message': 'Request updated successfully'}), 200
+
+    except Exception as e:
+        print("💥 Error updating maintenance request:", str(e))
+        return jsonify({'error': 'Server error'}), 500
+
 @app.route('/maintenance_requests', methods=['POST'])
 def create_maintenance():
     req = maint_schema.load(request.json)

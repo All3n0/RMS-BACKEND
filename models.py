@@ -152,11 +152,12 @@ class Expenses(db.Model):
 class MaintenanceRequests(db.Model):
     request_id = db.Column(db.Integer, primary_key=True)
     lease_id = db.Column(db.Integer, db.ForeignKey('leases.lease_id'), nullable=False)
+    tenant_id = db.Column(db.Integer, db.ForeignKey('tenants.id'), nullable=False)
     request_date = db.Column(db.Date, nullable=False)
     request_description = db.Column(db.String(50), nullable=False)
     request_status = db.Column(db.String(50), nullable=False)
     request_priority = db.Column(db.String(50), nullable=False)
-    cost= db.Column(db.Float, nullable=False)
+    cost= db.Column(db.Float, nullable=True)
     admin_id = db.Column(db.Integer, db.ForeignKey('admin.admin_id'), nullable=False)
 class Users(db.Model):
     __tablename__ = 'users'
