@@ -1,5 +1,7 @@
+from email.utils import parsedate
 import os
 from datetime import datetime, timedelta
+from dateutil.parser import parse as parse_date
 from flask import Blueprint, Flask, json, make_response, request, jsonify, session
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import extract, func, or_
@@ -1005,6 +1007,88 @@ def create_rent():
 from flask import request, jsonify
 from sqlalchemy import or_, and_
 from datetime import datetime
+from flask import request, jsonify, session
+from models import Tenants, Leases  # make sure these are imported
+
+import traceback
+
+@app.route('/tenant/active-lease', methods=['GET'])
+def get_active_lease():
+    try:
+        import json
+        user_cookie = request.cookies.get('user')
+        if not user_cookie:
+            print("❌ No session cookie found")
+            return jsonify({'error': 'Unauthorized'}), 401
+
+        print("✅ Cookie found:", user_cookie)
+        import urllib.parse
+        decoded_cookie = urllib.parse.unquote(user_cookie)
+        user_data = json.loads(decoded_cookie)
+
+        email = user_data.get('email')
+        if not email:
+            print("❌ No email found in cookie")
+            return jsonify({'error': 'Unauthorized'}), 401
+
+        print("✅ Email from cookie:", email)
+        tenant = Tenants.query.filter_by(email=email).first()
+        if not tenant:
+            print("❌ Tenant not found for email:", email)
+            return jsonify({'error': 'Tenant not found'}), 404
+
+        print("✅ Tenant found:", tenant.id)
+        lease = Leases.query.filter_by(tenant_id=tenant.id, lease_status='active').first()
+        if not lease:
+            print("❌ No active lease found for tenant:", tenant.id)
+            return jsonify({'error': 'No active lease found'}), 404
+
+        print("✅ Lease found:", lease.lease_id)
+        return jsonify({'lease': lease.to_dict()}), 200
+
+    except Exception as e:
+        print("🔥 Exception occurred:", str(e))
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
+
+
+@app.route('/tenant/file-payment', methods=['POST'])
+def file_payment():
+    try:
+        data = request.get_json()
+        print("✅ Received payment data:", data)
+
+        # Auto parse any valid date format
+        period_start = parse_date(data['period_start']).date()
+        period_end = parse_date(data['period_end']).date()
+        payment_date = parse_date(data['payment_date']).date()
+
+        new_payment = RentPayments(
+            lease_id=data['lease_id'],
+            tenant_id=data['tenant_id'],
+            admin_id=data['admin_id'],
+            amount=data['amount'],
+            payment_method=data['payment_method'],
+            transaction_reference_number=data['transaction_reference_number'],
+            period_start=period_start,
+            period_end=period_end,
+            payment_date=payment_date,
+            status='pending'
+        )
+
+        db.session.add(new_payment)
+        db.session.commit()
+        print("✅ Payment record saved to database")
+        return jsonify({'message': 'Payment submitted successfully'}), 201
+
+    except Exception as e:
+        db.session.rollback()
+        print("🔥 Exception occurred while filing payment:", str(e))
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
 @app.route('/admin/rent-payments/<int:admin_id>/months')
 def get_payment_months(admin_id):
     """Get distinct months for which payments exist"""
