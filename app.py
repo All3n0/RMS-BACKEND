@@ -181,10 +181,11 @@ def tenant_dashboard():
 
         current_month_paid = RentPayments.query.filter(
             RentPayments.tenant_id == tenant.id,
-            RentPayments.period_start >= first_of_month,
-            RentPayments.period_end < first_next_month,
-            func.lower(RentPayments.status) == 'paid'
+            func.lower(RentPayments.status).in_(['paid', 'completed']),
+            RentPayments.period_start <= first_next_month,
+            RentPayments.period_end >= first_of_month
         ).first() is not None
+
         print(f"📆 Current month rent paid: {current_month_paid}")
 
         # 8. Calculate next payment date
