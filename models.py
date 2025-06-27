@@ -158,6 +158,7 @@ class MaintenanceRequests(db.Model):
     request_status = db.Column(db.String(50), nullable=False)
     request_priority = db.Column(db.String(50), nullable=False)
     cost= db.Column(db.Float, nullable=True)
+    lease=  db.relationship('Leases', backref='maintenance_request', lazy=True)
     admin_id = db.Column(db.Integer, db.ForeignKey('admin.admin_id'), nullable=False)
 class Users(db.Model):
     __tablename__ = 'users'
