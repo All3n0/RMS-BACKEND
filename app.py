@@ -1222,7 +1222,8 @@ def get_rent_stats(admin_id):
         payments = RentPayments.query.filter(
             RentPayments.admin_id == admin_id,
             RentPayments.payment_date >= start_date,
-            RentPayments.payment_date <= end_date
+            RentPayments.payment_date <= end_date,
+            RentPayments.status == 'completed'
         ).all()
 
         # Debug output
@@ -1256,6 +1257,31 @@ def get_rent_stats(admin_id):
             'success': False,
             'error': str(e)
         }), 500
+@app.route('/admin/rent-payments/<int:payment_id>/status', methods=['PATCH'])
+def update_payment_status(payment_id):
+    """Admin updates the status of a rent payment"""
+    try:
+        data = request.get_json()
+        new_status = data.get('status')
+
+        if new_status not in ['paid', 'rejected']:
+            return jsonify({'success': False, 'error': 'Invalid status'}), 400
+
+        payment = RentPayments.query.get(payment_id)
+        if not payment:
+            return jsonify({'success': False, 'error': 'Payment not found'}), 404
+
+        if payment.status != 'pending':
+            return jsonify({'success': False, 'error': 'Only pending payments can be updated'}), 400
+
+        payment.status = new_status
+        db.session.commit()
+
+        return jsonify({'success': True, 'message': f'Status updated to {new_status}'}), 200
+
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 # ------- EXPENSES -------
 @app.route('/expenses', methods=['POST'])
 def create_expense():
