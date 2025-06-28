@@ -1673,7 +1673,7 @@ def get_admin_stats(admin_id):
         collected_rent = db.session.query(func.sum(RentPayments.amount))\
             .filter(
                 RentPayments.admin_id == admin_id,
-                RentPayments.status == 'paid',
+                RentPayments.status == 'completed',
                 extract('month', RentPayments.payment_date) == current_month,
                 extract('year', RentPayments.payment_date) == current_year
             )\
@@ -1700,6 +1700,8 @@ def get_admin_stats(admin_id):
 
         # Recent activity (last 5 maintenance requests)
         recent_activity = MaintenanceRequests.query\
+            .join(Leases, MaintenanceRequests.lease_id == Leases.lease_id)\
+            .join(Tenants, Leases.tenant_id == Tenants.id)\
             .filter(MaintenanceRequests.admin_id == admin_id)\
             .order_by(MaintenanceRequests.request_date.desc())\
             .limit(5)\
@@ -1720,12 +1722,12 @@ def get_admin_stats(admin_id):
         
         # Format responses
         formatted_activity = [{
-            'text': f"Maintenance for {req.lease.unit.unit_name}",
+            'text': f"Maintenance for {req.lease.unit.unit_name} filed by {req.lease.tenant.first_name} {req.lease.tenant.last_name}",
             'description': req.request_description,
             'time': req.request_date.strftime('%b %d, %Y'),
             'status': req.request_status
         } for req in recent_activity] if recent_activity else []
-        
+                
         formatted_payments = [{
             'id': lease.lease_id,
             'name': f"{tenant.first_name} {tenant.last_name}",
