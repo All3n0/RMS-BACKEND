@@ -943,33 +943,35 @@ def end_lease(unit_id):
         return jsonify({'error': str(e)}), 500
 
 # Update Unit
+@app.route('/units/<int:unit_id>', methods=['DELETE'])
+def delete_unit(unit_id):
+    unit = Units.query.get(unit_id)
+    if not unit:
+        return jsonify({'error': 'Unit not found'}), 404
+
+    # Check if there's an active lease for this unit
+    leases = Leases.query.filter_by(unit_id=unit_id).all()
+    for lease in leases:
+        db.session.delete(lease)  # Or you can update the lease to detach the unit_id if needed
+
+    db.session.delete(unit)
+    db.session.commit()
+    return jsonify({'message': 'Unit and related leases deleted successfully'}), 200
+
 @app.route('/units/<int:unit_id>', methods=['PATCH'])
 def update_unit(unit_id):
     data = request.get_json()
     unit = Units.query.get(unit_id)
-    
+
     if not unit:
         return jsonify({'error': 'Unit not found'}), 404
-    
-    # Update fields
+
     for key, value in data.items():
         if hasattr(unit, key):
             setattr(unit, key, value)
-    
+
     db.session.commit()
     return jsonify(unit.to_dict()), 200
-
-# Delete Unit
-@app.route('/units/<int:unit_id>', methods=['DELETE'])
-def delete_unit(unit_id):
-    unit = Units.query.get(unit_id)
-    
-    if not unit:
-        return jsonify({'error': 'Unit not found'}), 404
-    
-    db.session.delete(unit)
-    db.session.commit()
-    return jsonify({'message': 'Unit deleted successfully'}), 200
 
 # ------- LEASES -------
 @app.route('/leases', methods=['POST'])
