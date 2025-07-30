@@ -685,12 +685,28 @@ def get_units_by_property(property_id):
     ]), 200
 
 # Unit routes (assuming you're using Flask)
+
 @app.route('/units/<int:unit_id>', methods=['GET'])
 def get_unit(unit_id):
     try:
         unit = Units.query.get_or_404(unit_id)
         current_lease = Leases.query.filter_by(unit_id=unit_id, lease_status='active').first()
-        tenant = Tenants.query.get(current_lease.tenant_id) if current_lease else None
+
+        # Check if lease should automatically be ended
+        if current_lease and current_lease.end_date <= date.today():
+            current_lease.lease_status = 'ended'
+            unit.status = 'vacant'
+
+            tenant = Tenants.query.get(current_lease.tenant_id)
+            if tenant:
+                tenant.move_out_date = date.today()
+
+            db.session.commit()
+            current_lease = None
+            tenant = None
+
+        else:
+            tenant = Tenants.query.get(current_lease.tenant_id) if current_lease else None
 
         payments = []
         if current_lease:
@@ -702,8 +718,10 @@ def get_unit(unit_id):
             'current_tenant': tenant.to_dict() if tenant else None,
             'current_lease': current_lease.to_dict() if current_lease else None,
             'payment_history': [p.to_dict() for p in payments]
-        })
+        }), 200
+
     except Exception as e:
+        db.session.rollback()
         return jsonify({'error': str(e)}), 500
 
 
@@ -926,18 +944,32 @@ def end_lease(unit_id):
         data = request.get_json()
         lease = Leases.query.filter_by(unit_id=unit_id, lease_status='active').first_or_404()
 
-        lease.lease_status = 'ended'
-        lease.end_date = datetime.strptime(data['end_date'], '%Y-%m-%d')
+        end_date = datetime.strptime(data['end_date'], '%Y-%m-%d').date()
+        if end_date < lease.start_date:
+            return jsonify({'error': 'End date cannot be before start date'}), 400
 
+        # End the lease
+        lease.lease_status = 'ended'
+        lease.end_date = end_date
+
+        # Update unit status
         unit = Units.query.get(unit_id)
         unit.status = 'vacant'
+
+        # Remove the current tenant
+        tenant = Tenants.query.get(lease.tenant_id)
+        if tenant:
+            tenant.unit_id = None
+            tenant.move_in_date = None
 
         db.session.commit()
 
         return jsonify({
             'message': 'Lease ended successfully',
-            'unit': unit.to_dict()
-        })
+            'unit': unit.to_dict(),
+            'lease': lease.to_dict()
+        }), 200
+
     except Exception as e:
         db.session.rollback()
         return jsonify({'error': str(e)}), 500
@@ -998,7 +1030,34 @@ def delete_lease(id):
     db.session.delete(Leases.query.get_or_404(id))
     db.session.commit()
     return '', 204
+from datetime import date
+def check_and_update_leases():
+    """Check all active leases and mark as ended if past end date"""
+    try:
+        today = date.today()
+        active_leases = Leases.query.filter(
+            Leases.lease_status == 'active',
+            Leases.end_date <= today
+        ).all()
 
+        for lease in active_leases:
+            # Update lease status
+            lease.lease_status = 'ended'
+            
+            # Update unit status
+            unit = Units.query.get(lease.unit_id)
+            if unit:
+                unit.status = 'vacant'
+            
+            db.session.add(lease)
+            if unit:
+                db.session.add(unit)
+        
+        db.session.commit()
+        return f"Updated {len(active_leases)} leases"
+    except Exception as e:
+        db.session.rollback()
+        return f"Error updating leases: {str(e)}"
 # ------- RENT PAYMENTS -------
 @app.route('/rent_payments', methods=['POST'])
 def create_rent():
@@ -1210,25 +1269,32 @@ def get_rent_stats(admin_id):
 
         # Query for expected rent (unchanged)
         expected_rent = db.session.query(
-            func.sum(Leases.monthly_rent)
-        ).filter(
-            Leases.admin_id == admin_id,
-            Leases.start_date <= end_date,
-            or_(
-                Leases.end_date >= start_date,
-                Leases.end_date == None
-            )
-        ).scalar() or 0
+    func.sum(Leases.monthly_rent)
+).filter(
+    Leases.admin_id == admin_id,
+    Leases.start_date <= end_date,
+    or_(
+        Leases.end_date >= start_date,
+        Leases.end_date == None
+    ),
+    Leases.lease_status == 'active'
+).scalar() or 0
+
         print(f"Expected rent calculated: {expected_rent}")
 
         # SIMPLIFIED PAYMENT QUERY - JUST GET ALL PAYMENTS IN DATE RANGE
-        payments = RentPayments.query.filter(
-            RentPayments.admin_id == admin_id,
-            RentPayments.payment_date >= start_date,
-            RentPayments.payment_date <= end_date,
-            RentPayments.status == 'completed'
-        ).all()
-
+        payments = db.session.query(RentPayments).join(Leases).filter(
+    RentPayments.admin_id == admin_id,
+    RentPayments.payment_date >= start_date,
+    RentPayments.payment_date <= end_date,
+    RentPayments.status == 'completed',
+    Leases.lease_status == 'active',
+    Leases.start_date <= end_date,
+    or_(
+        Leases.end_date == None,
+        Leases.end_date >= start_date
+    )
+).all()
         # Debug output
         print(f"Number of payments found: {len(payments)}")
         for payment in payments:
@@ -1267,7 +1333,7 @@ def update_payment_status(payment_id):
         data = request.get_json()
         new_status = data.get('status')
 
-        if new_status not in ['paid', 'rejected']:
+        if new_status not in ['completed', 'rejected']:
             return jsonify({'success': False, 'error': 'Invalid status'}), 400
 
         payment = RentPayments.query.get(payment_id)
