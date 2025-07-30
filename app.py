@@ -1720,10 +1720,24 @@ def get_admin_stats(admin_id):
             .scalar() or 0
         
         # Calculate potential revenue
-        potential_revenue = db.session.query(func.sum(Units.monthly_rent))\
-            .join(Properties)\
-            .filter(Properties.admin_id == admin_id)\
-            .scalar() or 0
+      # Get start and end of the current month
+        today = datetime.today().date()
+        start_of_month = today.replace(day=1)
+        end_of_month = (start_of_month + timedelta(days=32)).replace(day=1) - timedelta(days=1)
+
+        # Calculate potential revenue from active leases within the month
+        potential_revenue = db.session.query(
+            func.sum(Leases.monthly_rent)
+        ).filter(
+            Leases.admin_id == admin_id,
+            Leases.start_date <= end_of_month,
+            or_(
+                Leases.end_date >= start_of_month,
+                Leases.end_date == None
+            ),
+            Leases.lease_status == 'active'
+        ).scalar() or 0
+
         
         # Count active tenants
         active_tenants = db.session.query(func.count(Tenants.id))\
@@ -1739,30 +1753,39 @@ def get_admin_stats(admin_id):
         current_year = datetime.now().year
         
         collected_rent = db.session.query(func.sum(RentPayments.amount))\
+            .join(Leases, RentPayments.lease_id == Leases.lease_id)\
             .filter(
                 RentPayments.admin_id == admin_id,
                 RentPayments.status == 'completed',
+                Leases.lease_status == 'active',
                 extract('month', RentPayments.payment_date) == current_month,
                 extract('year', RentPayments.payment_date) == current_year
             )\
             .scalar() or 0
+
         
         # Calculate outstanding payments
+        # Subquery to calculate sum of payments per lease this month
+        subq = db.session.query(
+            RentPayments.lease_id,
+            func.sum(RentPayments.amount).label("paid_amount")
+        ).filter(
+            RentPayments.status == 'completed',
+            extract('month', RentPayments.payment_date) == current_month,
+            extract('year', RentPayments.payment_date) == current_year
+        ).group_by(RentPayments.lease_id).subquery()
+
+        # Outer query to calculate outstanding for active leases
         outstanding_query = db.session.query(
-            func.sum(Leases.monthly_rent - func.coalesce(
-                db.session.query(func.sum(RentPayments.amount))
-                .filter(
-                    RentPayments.lease_id == Leases.lease_id,
-                    extract('month', RentPayments.payment_date) == current_month,
-                    extract('year', RentPayments.payment_date) == current_year
-                )
-                .scalar(), 0)
-            ))\
-            .filter(
-                Leases.admin_id == admin_id,
-                Leases.lease_status == 'active'
-            )\
-            .scalar()
+            func.sum(Leases.monthly_rent - func.coalesce(subq.c.paid_amount, 0))
+        ).outerjoin(subq, subq.c.lease_id == Leases.lease_id)\
+        .filter(
+            Leases.admin_id == admin_id,
+            Leases.lease_status == 'active'
+        ).scalar()
+
+        outstanding = outstanding_query or 0
+
         
         outstanding = outstanding_query or 0
 
