@@ -1,8 +1,8 @@
 """Initial migration
 
-Revision ID: 43aeeb11b583
+Revision ID: 303b95872e04
 Revises: 
-Create Date: 2025-06-19 00:38:02.636438
+Create Date: 2025-11-09 17:53:55.702820
 
 """
 from alembic import op
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision = '43aeeb11b583'
+revision = '303b95872e04'
 down_revision = None
 branch_labels = None
 depends_on = None
@@ -29,18 +29,21 @@ def upgrade():
     sa.Column('user_id', sa.Integer(), nullable=False),
     sa.Column('username', sa.String(length=50), nullable=False),
     sa.Column('email', sa.String(length=50), server_default='xxx', nullable=False),
-    sa.Column('password', sa.String(length=50), nullable=False),
+    sa.Column('password', sa.String(length=255), nullable=False),
     sa.Column('role', sa.String(length=50), nullable=False),
     sa.Column('last_login', sa.DateTime(), nullable=True),
     sa.Column('is_active', sa.Boolean(), nullable=False),
-    sa.PrimaryKeyConstraint('user_id')
+    sa.PrimaryKeyConstraint('user_id'),
+    sa.UniqueConstraint('email')
     )
     op.create_table('properties',
     sa.Column('id', sa.Integer(), nullable=False),
+    sa.Column('property_name', sa.String(length=50), nullable=False),
     sa.Column('address', sa.String(length=50), nullable=False),
     sa.Column('city', sa.String(length=50), nullable=False),
     sa.Column('state', sa.String(length=50), nullable=False),
     sa.Column('zip_code', sa.String(length=50), nullable=False),
+    sa.Column('name', sa.String(length=50), nullable=False),
     sa.Column('admin_id', sa.Integer(), nullable=False),
     sa.ForeignKeyConstraint(['admin_id'], ['admin.admin_id'], ),
     sa.PrimaryKeyConstraint('id')
@@ -54,11 +57,12 @@ def upgrade():
     sa.Column('date_of_birth', sa.Date(), nullable=False),
     sa.Column('emergency_contact_name', sa.String(length=50), nullable=False),
     sa.Column('emergency_contact_number', sa.String(length=50), nullable=False),
-    sa.Column('move_in_date', sa.Date(), nullable=False),
-    sa.Column('move_out_date', sa.Date(), nullable=True),
+    sa.Column('is_active', sa.Boolean(), nullable=False),
+    sa.Column('password', sa.String(length=50), nullable=False),
     sa.Column('admin_id', sa.Integer(), nullable=False),
     sa.ForeignKeyConstraint(['admin_id'], ['admin.admin_id'], ),
-    sa.PrimaryKeyConstraint('id')
+    sa.PrimaryKeyConstraint('id'),
+    sa.UniqueConstraint('email')
     )
     op.create_table('units',
     sa.Column('unit_id', sa.Integer(), nullable=False),
@@ -69,6 +73,7 @@ def upgrade():
     sa.Column('monthly_rent', sa.Float(), nullable=False),
     sa.Column('deposit_amount', sa.Float(), nullable=False),
     sa.Column('admin_id', sa.Integer(), nullable=False),
+    sa.Column('type', sa.String(length=50), nullable=False),
     sa.ForeignKeyConstraint(['admin_id'], ['admin.admin_id'], ),
     sa.ForeignKeyConstraint(['property_id'], ['properties.id'], ),
     sa.PrimaryKeyConstraint('unit_id')
@@ -84,6 +89,7 @@ def upgrade():
     sa.Column('lease_status', sa.String(length=50), nullable=False),
     sa.Column('property_id', sa.Integer(), nullable=False),
     sa.Column('admin_id', sa.Integer(), nullable=False),
+    sa.Column('payment_due_day', sa.Integer(), nullable=False),
     sa.ForeignKeyConstraint(['admin_id'], ['admin.admin_id'], ),
     sa.ForeignKeyConstraint(['property_id'], ['properties.id'], ),
     sa.ForeignKeyConstraint(['tenant_id'], ['tenants.id'], ),
@@ -106,14 +112,16 @@ def upgrade():
     op.create_table('maintenance_requests',
     sa.Column('request_id', sa.Integer(), nullable=False),
     sa.Column('lease_id', sa.Integer(), nullable=False),
+    sa.Column('tenant_id', sa.Integer(), nullable=False),
     sa.Column('request_date', sa.Date(), nullable=False),
     sa.Column('request_description', sa.String(length=50), nullable=False),
     sa.Column('request_status', sa.String(length=50), nullable=False),
     sa.Column('request_priority', sa.String(length=50), nullable=False),
-    sa.Column('cost', sa.Float(), nullable=False),
+    sa.Column('cost', sa.Float(), nullable=True),
     sa.Column('admin_id', sa.Integer(), nullable=False),
     sa.ForeignKeyConstraint(['admin_id'], ['admin.admin_id'], ),
     sa.ForeignKeyConstraint(['lease_id'], ['leases.lease_id'], ),
+    sa.ForeignKeyConstraint(['tenant_id'], ['tenants.id'], ),
     sa.PrimaryKeyConstraint('request_id')
     )
     op.create_table('rent_payments',
@@ -124,8 +132,13 @@ def upgrade():
     sa.Column('amount', sa.Float(), nullable=False),
     sa.Column('payment_method', sa.String(length=50), nullable=False),
     sa.Column('transaction_reference_number', sa.String(length=50), nullable=False),
+    sa.Column('period_start', sa.Date(), nullable=False),
+    sa.Column('period_end', sa.Date(), nullable=False),
+    sa.Column('status', sa.String(length=50), nullable=False),
+    sa.Column('tenant_id', sa.Integer(), nullable=False),
     sa.ForeignKeyConstraint(['admin_id'], ['admin.admin_id'], ),
     sa.ForeignKeyConstraint(['lease_id'], ['leases.lease_id'], ),
+    sa.ForeignKeyConstraint(['tenant_id'], ['tenants.id'], ),
     sa.PrimaryKeyConstraint('payment_id')
     )
     # ### end Alembic commands ###

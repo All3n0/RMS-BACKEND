@@ -9,8 +9,7 @@ class Tenants(db.Model):
     date_of_birth = db.Column(db.Date, nullable=False)
     emergency_contact_name = db.Column(db.String(50), nullable=False)
     emergency_contact_number= db.Column(db.String(50), nullable=False)
-    move_in_date = db.Column(db.Date, nullable=False)
-    move_out_date = db.Column(db.Date, nullable=True)
+    is_active = db.Column(db.Boolean, nullable=False, default=True)
     password = db.Column(db.String(50), nullable=False)
     leases=db.relationship('Leases', backref='tenant', lazy=True)
     payments = db.relationship('RentPayments', backref='payment_tenant', lazy=True, foreign_keys='RentPayments.tenant_id')
@@ -25,8 +24,7 @@ class Tenants(db.Model):
             'date_of_birth': self.date_of_birth,
             'emergency_contact_name': self.emergency_contact_name,
             'emergency_contact_number': self.emergency_contact_number,
-            'move_in_date': self.move_in_date,
-            'move_out_date': self.move_out_date,
+            'is_active': self.is_active,
             'admin_id': self.admin_id
         }
 class Properties(db.Model):

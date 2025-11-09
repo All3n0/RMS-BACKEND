@@ -778,7 +778,7 @@ def assign_tenant(unit_id):
                     date_of_birth=datetime.strptime(data['date_of_birth'], '%Y-%m-%d').date(),
                     emergency_contact_name=data['emergency_contact_name'],
                     emergency_contact_number=data['emergency_contact_number'],
-                    move_in_date=datetime.strptime(data['move_in_date'], '%Y-%m-%d').date(),
+                    # move_in_date=datetime.strptime(data['move_in_date'], '%Y-%m-%d').date(),
                     admin_id=data['admin_id'],
                     password=hashed_password
                 )
@@ -837,7 +837,146 @@ def assign_tenant(unit_id):
     except Exception as e:
         db.session.rollback()
         return jsonify({'error': str(e)}), 500
+@app.route('/units/<int:unit_id>/assign-lease', methods=['POST'])
+def assign_lease(unit_id):
+    try:
+        data = request.get_json()
+        unit = Units.query.get_or_404(unit_id)
 
+        # ✅ Validate required lease dates
+        for field in ['lease_start', 'lease_end']:
+            if field not in data:
+                return jsonify({'error': f'Missing required field: {field}'}), 400
+
+        try:
+            lease_start = datetime.strptime(data['lease_start'], '%Y-%m-%d').date()
+            lease_end = datetime.strptime(data['lease_end'], '%Y-%m-%d').date()
+        except ValueError:
+            return jsonify({'error': 'Invalid date format for lease dates'}), 400
+
+        if lease_end <= lease_start:
+            return jsonify({'error': 'Lease end date must be AFTER start date'}), 400
+
+        # ✅ Validate payment due day
+        payment_due_day = int(data.get('payment_due_day', 1))
+        if not (1 <= payment_due_day <= 28):
+            return jsonify({'error': 'Payment due day must be between 1 and 28'}), 400
+
+        # ✅ Get admin_id using the same logic as tenants route
+        user_id = data.get('user_id')  # Frontend should send user_id
+        if not user_id:
+            return jsonify({'error': 'User ID is required'}), 400
+
+        # Get the user by user_id
+        user = Users.query.get(user_id)
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
+
+        # Find the admin by matching the user's email with admin's gmail
+        admin = Admin.query.filter_by(gmail=user.email).first()
+        if not admin:
+            return jsonify({'error': 'Admin not found for this user'}), 404
+
+        admin_id = admin.admin_id
+
+        # ✅ CASE A: Assign existing tenant
+        if data.get('tenant_id'):
+            tenant = Tenants.query.get(data['tenant_id'])
+            if not tenant:
+                return jsonify({'error': 'Tenant not found'}), 404
+
+            # ✅ Ensure tenant belongs to same admin as unit
+            if tenant.admin_id != admin_id:
+                return jsonify({'error': 'Tenant does not belong to this admin'}), 403
+
+            # Reactivate tenant if previously inactive
+            tenant.is_active = True
+
+        else:
+            # ✅ CASE B: Create new tenant
+            required = [
+                'first_name','last_name','email','phone','date_of_birth',
+                'emergency_contact_name','emergency_contact_number',
+                'move_in_date'
+            ]
+            missing = [f for f in required if not data.get(f)]
+            if missing:
+                return jsonify({'error': f'Missing tenant fields: {missing}'}), 400
+
+            # ✅ Check for duplicate email
+            if Tenants.query.filter_by(email=data['email']).first():
+                return jsonify({'error': 'Email already exists in tenants'}), 400
+            if Users.query.filter_by(email=data['email']).first():
+                return jsonify({'error': 'Email already exists in users'}), 400
+
+            # ✅ Hash default password
+            default_password = f"{data['first_name'].lower()}@123"
+            hashed_password = generate_password_hash(default_password)
+
+            # ✅ Create tenant with the correct admin_id
+            tenant = Tenants(
+                first_name=data['first_name'],
+                last_name=data['last_name'],
+                email=data['email'],
+                phone=data['phone'],
+                date_of_birth=datetime.strptime(data['date_of_birth'], '%Y-%m-%d').date(),
+                emergency_contact_name=data['emergency_contact_name'],
+                emergency_contact_number=data['emergency_contact_number'],
+                move_in_date=datetime.strptime(data['move_in_date'], '%Y-%m-%d').date(),
+                password=hashed_password,
+                admin_id=admin_id,  # Use the correct admin_id from user lookup
+                is_active=True
+            )
+            db.session.add(tenant)
+            db.session.flush()
+
+            # ✅ Create user login account
+            user = Users(
+                username=data['email'],
+                email=data['email'],
+                password=hashed_password,
+                role='tenant',
+                is_active=True
+            )
+            db.session.add(user)
+
+        # ✅ Create lease entry
+        lease = Leases(
+            tenant_id=tenant.id,
+            unit_id=unit_id,
+            start_date=lease_start,
+            end_date=lease_end,
+            monthly_rent=unit.monthly_rent,
+            deposit_amount=unit.deposit_amount,
+            lease_status='active',
+            property_id=unit.property_id,
+            admin_id=admin_id,  # Use the correct admin_id
+            payment_due_day=payment_due_day
+        )
+        db.session.add(lease)
+
+        # ✅ Update unit
+        unit.status = 'occupied'
+
+        db.session.commit()
+
+        return jsonify({
+            'message': 'Lease assigned successfully',
+            'tenant': tenant.to_dict(),
+            'lease': lease.to_dict()
+        }), 200
+
+    except Exception as e:
+        db.session.rollback()
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+@app.route('/tenants/by-admin/<int:user_id>', methods=['GET'])
+def tenants_by_admin(user_id):
+    try:
+        tenants = Tenants.query.filter_by(admin_id=user_id).all()
+        return jsonify({'tenants': [tenant.to_dict() for tenant in tenants]}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 @app.route('/units/<int:unit_id>/record-payment', methods=['POST'])
 def record_payment(unit_id):
     """Record a new rent payment"""
@@ -948,11 +1087,21 @@ def end_lease(unit_id):
         if not lease:
             return jsonify({'error': 'No active lease found for this unit'}), 400
 
-        # Determine end date
+        # Determine end date - ensure it's a date object
         end_date_str = data.get('end_date')
-        end_date = datetime.strptime(end_date_str, '%Y-%m-%d').date() if end_date_str else date.today()
-        if end_date < lease.start_date:
-            return jsonify({'error': 'End date cannot be before start date'}), 400
+        if end_date_str:
+            try:
+                end_date = datetime.strptime(end_date_str, '%Y-%m-%d').date()
+            except ValueError:
+                return jsonify({'error': 'Invalid date format. Use YYYY-MM-DD'}), 400
+        else:
+            end_date = date.today()
+            
+        # Ensure both dates are date objects for comparison
+        lease_start = lease.start_date.date() if isinstance(lease.start_date, datetime) else lease.start_date
+        
+        if end_date < lease_start:
+            return jsonify({'error': f'End date ({end_date}) cannot be before start date ({lease_start})'}), 400
 
         # End the lease
         lease.lease_status = 'ended'
@@ -963,11 +1112,10 @@ def end_lease(unit_id):
         if unit:
             unit.status = 'vacant'
 
-        # Unassign tenant
+        # Update tenant status only (no unit_id or move_out_date in your model)
         tenant = Tenants.query.get(lease.tenant_id)
         if tenant:
-            tenant.unit_id = None
-            tenant.move_out_date = end_date
+            tenant.is_active = False
 
         db.session.commit()
 
@@ -979,10 +1127,10 @@ def end_lease(unit_id):
 
     except Exception as e:
         db.session.rollback()
+        import traceback
+        traceback.print_exc()
         print("Error ending lease:", e)
         return jsonify({'error': str(e)}), 500
-
-
 # Update Unit
 @app.route('/units/<int:unit_id>', methods=['DELETE'])
 def delete_unit(unit_id):
@@ -1572,20 +1720,26 @@ def register():
             gmail=new_user.email
         )
         db.session.add(new_admin)
+        db.session.commit()  # Commit to get the admin_id
+        
+        # Return admin_id as user_id for admin users
+        user_response_id = new_admin.admin_id
+    else:
+        # For other roles, use the user_id
+        user_response_id = new_user.user_id
 
     db.session.commit()
 
     return jsonify({
         'message': 'User created successfully',
         'user': {
-            'user_id': new_user.user_id,
+            'user_id': user_response_id,  # This will be admin_id for admins, user_id for others
             'username': new_user.username,
             'email': new_user.email,
             'role': new_user.role,
             'is_active': new_user.is_active
         }
     }), 201
-
 
 
 # -------------------- LOGIN --------------------
@@ -1624,8 +1778,23 @@ def login():
         user.last_login = datetime.utcnow()
         db.session.commit()
 
+        # Determine the ID to return based on role
+        if user.role == 'admin':
+            # Find the admin by matching the user's email with admin's gmail
+            admin = Admin.query.filter_by(gmail=user.email).first()
+            if admin:
+                user_id_to_return = admin.admin_id
+                print(f"Admin found, returning admin_id: {user_id_to_return}")  # Debug log
+            else:
+                print("Error: Admin record not found for admin user")  # Debug log
+                return jsonify({'error': 'Admin record not found'}), 500
+        else:
+            # For non-admin users, use the user_id
+            user_id_to_return = user.user_id
+            print(f"Non-admin user, returning user_id: {user_id_to_return}")  # Debug log
+
         user_data = {
-            'user_id': user.user_id,
+            'user_id': user_id_to_return,  # This will be admin_id for admins, user_id for others
             'username': user.username,
             'email': user.email,
             'role': user.role,
@@ -1655,7 +1824,6 @@ def login():
     except Exception as e:
         print("Error in login endpoint:", str(e))  # Debug log
         return jsonify({'error': 'Internal server error'}), 500
-
 # -------------------- LOGOUT --------------------
 @app.route('/logout', methods=['POST'])
 def logout():
