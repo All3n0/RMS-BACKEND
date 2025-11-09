@@ -36,7 +36,7 @@ class Properties(db.Model):
     city = db.Column(db.String(50), nullable=False)
     state = db.Column(db.String(50), nullable=False)
     zip_code = db.Column(db.String(50), nullable=False)
-    
+    name = db.Column(db.String(50), nullable=False,default='unnamed')
     admin_id = db.Column(db.Integer, db.ForeignKey('admin.admin_id'), nullable=False)  # 🔥 Add this
 
     units = db.relationship('Units', backref='property', lazy=True)

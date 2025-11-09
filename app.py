@@ -546,7 +546,8 @@ def get_properties_by_admin(admin_id):
             'address': prop.address,
             'city': prop.city,
             'state': prop.state,
-            'zip_code': prop.zip_code
+            'zip_code': prop.zip_code,
+            'property_name': prop.property_name
         })
 
     return jsonify(property_list), 200
@@ -941,10 +942,15 @@ def record_payment(unit_id):
 @app.route('/units/<int:unit_id>/end-lease', methods=['POST'])
 def end_lease(unit_id):
     try:
-        data = request.get_json()
-        lease = Leases.query.filter_by(unit_id=unit_id, lease_status='active').first_or_404()
+        data = request.get_json() or {}
+        # Fetch active lease
+        lease = Leases.query.filter_by(unit_id=unit_id, lease_status='active').first()
+        if not lease:
+            return jsonify({'error': 'No active lease found for this unit'}), 400
 
-        end_date = datetime.strptime(data['end_date'], '%Y-%m-%d').date()
+        # Determine end date
+        end_date_str = data.get('end_date')
+        end_date = datetime.strptime(end_date_str, '%Y-%m-%d').date() if end_date_str else date.today()
         if end_date < lease.start_date:
             return jsonify({'error': 'End date cannot be before start date'}), 400
 
@@ -954,25 +960,28 @@ def end_lease(unit_id):
 
         # Update unit status
         unit = Units.query.get(unit_id)
-        unit.status = 'vacant'
+        if unit:
+            unit.status = 'vacant'
 
-        # Remove the current tenant
+        # Unassign tenant
         tenant = Tenants.query.get(lease.tenant_id)
         if tenant:
             tenant.unit_id = None
-            tenant.move_in_date = None
+            tenant.move_out_date = end_date
 
         db.session.commit()
 
         return jsonify({
             'message': 'Lease ended successfully',
-            'unit': unit.to_dict(),
+            'unit': unit.to_dict() if unit else None,
             'lease': lease.to_dict()
         }), 200
 
     except Exception as e:
         db.session.rollback()
+        print("Error ending lease:", e)
         return jsonify({'error': str(e)}), 500
+
 
 # Update Unit
 @app.route('/units/<int:unit_id>', methods=['DELETE'])
