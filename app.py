@@ -541,13 +541,24 @@ def get_properties_by_admin(admin_id):
 
     property_list = []
     for prop in properties:
+        # Count total units for this property
+        total_units = Units.query.filter_by(property_id=prop.id).count()
+        
+        # Count occupied units (units with active leases)
+        occupied_units = db.session.query(Leases).join(Units).filter(
+            Units.property_id == prop.id,
+            Leases.lease_status == 'active'
+        ).count()
+
         property_list.append({
             'id': prop.id,
             'address': prop.address,
             'city': prop.city,
             'state': prop.state,
             'zip_code': prop.zip_code,
-            'property_name': prop.property_name
+            'property_name': prop.property_name,
+            'total_units': total_units,
+            'occupied_units': occupied_units
         })
 
     return jsonify(property_list), 200
