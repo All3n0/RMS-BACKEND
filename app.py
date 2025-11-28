@@ -116,39 +116,62 @@ def create_tenant():
     db.session.add(tenant)
     db.session.commit()
     return tenant_schema.jsonify(tenant), 201
+from urllib.parse import unquote
+import json
 @app.route('/tenant-dashboard', methods=['GET'])
 def tenant_dashboard():
     try:
-        import urllib.parse
-
-        print("🔍 Incoming request to /tenant-dashboard")
-
-        # 1. Get and decode session cookie
-        session_cookie = request.cookies.get('user')
-        if not session_cookie:
-            print("❌ No session cookie found")
-            return jsonify({'error': 'Authentication required'}), 401
-
-        decoded_cookie = urllib.parse.unquote(session_cookie)
-        session_data = json.loads(decoded_cookie)
-
-        email = session_data.get('email')
-        role = session_data.get('role')
-
-        print(f"🔑 Decoded session: email={email}, role={role}")
-        if not email or role != 'tenant':
-            print("🚫 Unauthorized access")
-            return jsonify({'error': 'Unauthorized access'}), 403
-
-        # 2. Get tenant info using email
-        tenant = Tenants.query.filter_by(email=email).first()
+        # Get user data from cookie
+        user_cookie = request.cookies.get('user')
+        if not user_cookie:
+            return jsonify({'error': 'Not authenticated'}), 401
+        
+        print("✅ Cookie found:", user_cookie)
+        
+        # URL-decode the cookie first, then parse as JSON
+        decoded_cookie = unquote(user_cookie)
+        print("🔓 Decoded cookie:", decoded_cookie)
+        
+        user_data = json.loads(decoded_cookie)
+        user_id = user_data.get('user_id')
+        user_role = user_data.get('role')
+        
+        print(f"Dashboard request - User ID: {user_id}, Role: {user_role}")
+        if user_role != 'tenant':
+            return jsonify({'error': 'Access denied'}), 403
+        
+        # Find the user
+        user = Users.query.filter_by(user_id=user_id).first()
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
+        
+        print(f"🔍 Found user: {user.username}, email: {user.email}")
+            
+        # Find the tenant by email
+        tenant = Tenants.query.filter_by(email=user.email).first()
+        
         if not tenant:
-            print("❌ Tenant not found for email")
-            return jsonify({'error': 'Tenant not found'}), 404
-
-        print(f"👤 Tenant found: {tenant.first_name} {tenant.last_name} (ID={tenant.id})")
-
-        # 3. Get lease
+            print("❌ No tenant record found for this user")
+            # Create a tenant record if it doesn't exist
+            new_tenant = Tenants(
+                first_name=user.username.split('@')[0],  # Use part of email as first name
+                last_name='User',
+                email=user.email,
+                phone='Not provided',
+                date_of_birth=datetime.utcnow().date(),
+                emergency_contact_name='Not provided',
+                emergency_contact_number='Not provided',
+                password='default_password',  # You might want to handle this differently
+                admin_id=1  # Default admin
+            )
+            db.session.add(new_tenant)
+            db.session.commit()
+            tenant = new_tenant
+            print(f"✅ Created new tenant record with ID: {tenant.id}")
+        else:
+            print(f"✅ Found tenant with ID: {tenant.id}")  # Changed from tenant_id to id
+            
+        # 3. Get lease - FIXED: use tenant.id instead of tenant.tenant_id
         lease = Leases.query.filter_by(tenant_id=tenant.id, lease_status='active').first()
         if lease:
             print(f"📄 Active lease found: ID={lease.lease_id}, property_id={lease.property_id}, unit_id={lease.unit_id}")
@@ -169,18 +192,18 @@ def tenant_dashboard():
         else:
             print("⚠️ Property not found or no lease")
 
-        # 6. Get recent payments
+        # 6. Get recent payments - FIXED: use tenant.id instead of tenant.tenant_id
         payments = RentPayments.query.filter_by(tenant_id=tenant.id)\
             .order_by(RentPayments.payment_date.desc()).limit(5).all()
         print(f"💰 Retrieved {len(payments)} recent payment(s)")
 
-        # 7. Check current month payment
+        # 7. Check current month payment - FIXED: use tenant.id instead of tenant.tenant_id
         today = datetime.now().date()
         first_of_month = today.replace(day=1)
         first_next_month = (first_of_month + timedelta(days=32)).replace(day=1)
 
         current_month_paid = RentPayments.query.filter(
-            RentPayments.tenant_id == tenant.id,
+            RentPayments.tenant_id == tenant.id,  # FIXED: use tenant.id
             func.lower(RentPayments.status).in_(['paid', 'completed']),
             RentPayments.period_start <= first_next_month,
             RentPayments.period_end >= first_of_month
@@ -188,7 +211,8 @@ def tenant_dashboard():
 
         print(f"📆 Current month rent paid: {current_month_paid}")
 
-        # 8. Calculate next payment date
+        
+            # 8. Calculate next payment date
         next_payment_date = None
         if lease and lease.payment_due_day:
             try:
@@ -198,6 +222,84 @@ def tenant_dashboard():
                 print(f"📅 Next payment due on: {next_payment_date}")
             except ValueError:
                 print("⚠️ Invalid payment_due_day in lease")
+
+        # NEW: Calculate EXACT payment position (ahead or behind)
+        payment_position = 0.0  # Positive = ahead, Negative = behind
+        payment_details = []
+        months_ahead = 0
+        months_behind = 0
+        
+        if lease:
+            monthly_rent = lease.monthly_rent
+            lease_start = lease.start_date
+            
+            # Get ALL payments for this tenant to calculate exact amounts
+            all_payments = RentPayments.query.filter_by(tenant_id=tenant.id).all()
+            
+            # Calculate total paid amount
+            total_paid = sum(p.amount for p in all_payments if p.status.lower() in ['paid', 'completed'])
+            
+            # Calculate expected payments up to current date
+            current_date = today
+            expected_periods = []
+            period_date = lease_start.replace(day=1)
+            
+            while period_date <= current_date:
+                if period_date >= lease_start:  # Only count periods after lease start
+                    expected_periods.append(period_date)
+                # Move to next month
+                period_date = (period_date + timedelta(days=32)).replace(day=1)
+            
+            # Calculate expected amount up to current date
+            expected_amount = len(expected_periods) * monthly_rent
+            
+            # Calculate payment position (positive = ahead, negative = behind)
+            payment_position = total_paid - expected_amount
+            
+            # Calculate months ahead/behind based on payment position
+            if payment_position > 0:
+                months_ahead = payment_position / monthly_rent
+            elif payment_position < 0:
+                months_behind = abs(payment_position) / monthly_rent
+            
+            print(f"💰 Total paid: {total_paid}")
+            print(f"💰 Expected amount: {expected_amount}")
+            print(f"💰 Exact payment position: {payment_position}")
+            print(f"💰 Months ahead: {months_ahead}, Months behind: {months_behind}")
+
+            # Build payment details for display
+            period_date = lease_start.replace(day=1)
+            display_end_date = current_date + timedelta(days=90)  # Show 3 months ahead
+            
+            while period_date <= display_end_date:
+                if period_date >= lease_start:
+                    period_end = (period_date + timedelta(days=32)).replace(day=1) - timedelta(days=1)
+                    
+                    # Check if this specific period is paid
+                    period_paid = any(
+                        p for p in all_payments 
+                        if p.status.lower() in ['paid', 'completed']
+                        and p.period_start <= period_end
+                        and p.period_end >= period_date
+                    )
+                    
+                    status = 'unpaid'
+                    if period_paid:
+                        status = 'paid'
+                    elif period_date > current_date.replace(day=1):
+                        status = 'upcoming'
+                    elif period_date <= current_date.replace(day=1):
+                        status = 'due'
+                    
+                    payment_details.append({
+                        'period': period_date.strftime('%B %Y'),
+                        'amount': monthly_rent,
+                        'due_date': period_date.replace(day=lease.payment_due_day).strftime('%Y-%m-%d'),
+                        'status': status
+                    })
+                
+                # Move to next month
+                period_date = (period_date + timedelta(days=32)).replace(day=1)
 
         # 9. Build response
         response = {
@@ -239,7 +341,11 @@ def tenant_dashboard():
             'payment_status': {
                 'current_month_paid': current_month_paid,
                 'next_payment_date': next_payment_date.strftime('%Y-%m-%d') if next_payment_date else None,
-                'last_payment_date': payments[0].payment_date.strftime('%Y-%m-%d') if payments else None
+                'last_payment_date': payments[0].payment_date.strftime('%Y-%m-%d') if payments else None,
+                'payment_position': float(payment_position),  # Ensure it's a float
+                'months_ahead': float(months_ahead),  # Can be fractional
+                'months_behind': float(months_behind),  # Can be fractional
+                'payment_details': payment_details
             }
         }
 
@@ -1338,7 +1444,7 @@ def get_payment_months(admin_id):
         return jsonify({'error': str(e)}), 500
 @app.route('/admin/rent-payments/<int:admin_id>')
 def get_payments(admin_id):
-    """Get payments with filtering options"""
+    """Get payments with filtering options - Fixed version"""
     try:
         # Get all filter parameters
         search = request.args.get('search')
@@ -1352,10 +1458,23 @@ def get_payments(admin_id):
         start_date = request.args.get('start_date')
         end_date = request.args.get('end_date')
 
-        # Base query with joins
+        print(f"🔍 Fetching payments for admin {admin_id} with filters:")
+        print(f"   Search: {search}, Status: {status}, Month: {month}")
+
+        # Base query - SIMPLIFIED like properties route
         query = db.session.query(
-            RentPayments,
-            Tenants.first_name + ' ' + Tenants.last_name.label('tenant_name'),
+            RentPayments.payment_id,
+            RentPayments.amount,
+            RentPayments.payment_method,
+            RentPayments.transaction_reference_number,
+            RentPayments.payment_date,
+            RentPayments.status,
+            RentPayments.period_start,
+            RentPayments.period_end,
+            RentPayments.lease_id,
+            RentPayments.tenant_id,
+            RentPayments.admin_id,
+            (Tenants.first_name + ' ' + Tenants.last_name).label('tenant_name'),
             Units.unit_name,
             Properties.property_name
         ).join(Leases, RentPayments.lease_id == Leases.lease_id)\
@@ -1383,9 +1502,9 @@ def get_payments(admin_id):
         if status:
             query = query.filter(RentPayments.status == status)
         if month:
-            query = query.filter(db.func.extract('month', RentPayments.payment_date) == month)
+            query = query.filter(db.func.extract('month', RentPayments.payment_date) == int(month))
         if year:
-            query = query.filter(db.func.extract('year', RentPayments.payment_date) == year)
+            query = query.filter(db.func.extract('year', RentPayments.payment_date) == int(year))
         if start_date:
             query = query.filter(RentPayments.payment_date >= start_date)
         if end_date:
@@ -1394,21 +1513,36 @@ def get_payments(admin_id):
         # Execute query
         results = query.order_by(RentPayments.payment_date.desc()).all()
 
-        # Format results
+        # Format results - SIMPLE like properties route
         payments = []
-        for payment, tenant_name, unit_name, property_name in results:
-            payment_dict = payment.to_dict()
-            payment_dict.update({
-                'tenant_name': tenant_name,
-                'unit_name': unit_name,
-                'property_name': property_name,
-                'payment_month': payment.payment_date.strftime('%Y-%m')
-            })
+        for result in results:
+            payment_dict = {
+                'payment_id': result.payment_id,
+                'amount': float(result.amount) if result.amount else 0.0,
+                'payment_method': result.payment_method,
+                'transaction_reference_number': result.transaction_reference_number,
+                'payment_date': result.payment_date.strftime('%Y-%m-%d') if result.payment_date else None,
+                'status': result.status,
+                'period_start': result.period_start.strftime('%Y-%m-%d') if result.period_start else None,
+                'period_end': result.period_end.strftime('%Y-%m-%d') if result.period_end else None,
+                'lease_id': result.lease_id,
+                'tenant_id': result.tenant_id,
+                'admin_id': result.admin_id,
+                'tenant_name': result.tenant_name,
+                'unit_name': result.unit_name,
+                'property_name': result.property_name,
+                'payment_month': result.payment_date.strftime('%Y-%m') if result.payment_date else None
+            }
             payments.append(payment_dict)
 
+        print(f"✅ Found {len(payments)} payments for admin {admin_id}")
         return jsonify({'success': True, 'payments': payments})
+
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        print(f"❌ Error fetching payments: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500@app.route('/admin/rent-payments/<int:admin_id>/stats', methods=['GET'])
 @app.route('/admin/rent-payments/<int:admin_id>/stats', methods=['GET'])
 def get_rent_stats(admin_id):
     try:
@@ -1419,7 +1553,6 @@ def get_rent_stats(admin_id):
         end_date = request.args.get('end_date')
         
         print(f"\n=== Rent Stats Calculation ===\nAdmin ID: {admin_id}")
-        print(f"Request params - month: {month}, year: {year}, start_date: {start_date}, end_date: {end_date}")
 
         # Determine date range
         if start_date and end_date:
@@ -1429,67 +1562,55 @@ def get_rent_stats(admin_id):
             start_date = datetime.strptime(f'{year}-{month}-01', '%Y-%m-%d').date()
             end_date = (start_date + timedelta(days=32)).replace(day=1) - timedelta(days=1)
         else:
+            # Default to current month
             today = datetime.today().date()
             start_date = today.replace(day=1)
             end_date = today
 
-        print(f"Date range being used: {start_date} to {end_date}")
+        print(f"Date range: {start_date} to {end_date}")
 
-        # Query for expected rent (unchanged)
-        expected_rent = db.session.query(
-    func.sum(Leases.monthly_rent)
-).filter(
-    Leases.admin_id == admin_id,
-    Leases.start_date <= end_date,
-    or_(
-        Leases.end_date >= start_date,
-        Leases.end_date == None
-    ),
-    Leases.lease_status == 'active'
-).scalar() or 0
+        # SIMPLIFIED: Get expected rent from active leases
+        expected_rent_query = db.session.query(
+            func.sum(Leases.monthly_rent)
+        ).filter(
+            Leases.admin_id == admin_id,
+            Leases.lease_status == 'active'
+        )
+        expected_rent = expected_rent_query.scalar() or 0
 
-        print(f"Expected rent calculated: {expected_rent}")
+        # SIMPLIFIED: Get collected rent from completed payments in date range
+        collected_rent_query = db.session.query(
+            func.sum(RentPayments.amount)
+        ).filter(
+            RentPayments.admin_id == admin_id,
+            RentPayments.status == 'completed',
+            RentPayments.payment_date >= start_date,
+            RentPayments.payment_date <= end_date
+        )
+        collected_rent = collected_rent_query.scalar() or 0
 
-        # SIMPLIFIED PAYMENT QUERY - JUST GET ALL PAYMENTS IN DATE RANGE
-        payments = db.session.query(RentPayments).join(Leases).filter(
-    RentPayments.admin_id == admin_id,
-    RentPayments.payment_date >= start_date,
-    RentPayments.payment_date <= end_date,
-    RentPayments.status == 'completed',
-    Leases.lease_status == 'active',
-    Leases.start_date <= end_date,
-    or_(
-        Leases.end_date == None,
-        Leases.end_date >= start_date
-    )
-).all()
-        # Debug output
-        print(f"Number of payments found: {len(payments)}")
-        for payment in payments:
-            print(f"Payment ID: {payment.payment_id}, Amount: {payment.amount}, Date: {payment.payment_date}")
-
-        collected_rent = sum(p.amount for p in payments) if payments else 0
-        print(f"Collected rent calculated: {collected_rent}")
+        print(f"Expected rent: {expected_rent}")
+        print(f"Collected rent: {collected_rent}")
 
         # Calculate percentage
         percentage = 0
         if expected_rent > 0:
-            percentage = min(round((collected_rent / expected_rent) * 100), 100)
+            percentage = round((collected_rent / expected_rent) * 100, 1)
 
-        print(f"Final percentage: {percentage}%")
+        print(f"Percentage: {percentage}%")
         print("=====================\n")
 
         return jsonify({
             'success': True,
             'collected': float(collected_rent),
             'expected': float(expected_rent),
-            'percentage': percentage,
-            'payment_count': len(payments),
-            'date_range': f"{start_date} to {end_date}"
+            'percentage': percentage
         }), 200
 
     except Exception as e:
-        print(f"Error in rent stats: {str(e)}")
+        print(f"❌ Error in rent stats: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return jsonify({
             'success': False,
             'error': str(e)
