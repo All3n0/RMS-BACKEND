@@ -1,4 +1,37 @@
-from app import db
+from config import db
+from datetime import datetime, timedelta
+import secrets
+from werkzeug.security import generate_password_hash
+
+class PasswordResetToken(db.Model):
+    """Store password reset tokens with expiration and usage tracking"""
+    __tablename__ = 'password_reset_tokens'
+    
+    id = db.Column(db.String(36), primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.user_id'), nullable=False)
+    hashed_token = db.Column(db.String(255), nullable=False, unique=True)
+    expires_at = db.Column(db.DateTime, nullable=False)
+    used = db.Column(db.Boolean, default=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    ip_address = db.Column(db.String(45), nullable=True)  # IPv4 or IPv6
+    
+    user = db.relationship('Users', backref='reset_tokens', lazy=True)
+    
+    @staticmethod
+    def create_token(user_id, ip_address=None, expiry_minutes=30):
+        """Generate a new password reset token (raw + hashed)"""
+        raw_token = secrets.token_urlsafe(48)  # 64 bytes in URL-safe format
+        hashed_token = generate_password_hash(raw_token)
+        
+        reset_token = PasswordResetToken(
+            id=secrets.token_hex(18),  # UUID-like ID
+            user_id=user_id,
+            hashed_token=hashed_token,
+            expires_at=datetime.utcnow() + timedelta(minutes=expiry_minutes),
+            ip_address=ip_address
+        )
+        
+        return reset_token, raw_token  # Return token object and raw token for email
 
 class Tenants(db.Model):
     id = db.Column(db.Integer, primary_key=True)

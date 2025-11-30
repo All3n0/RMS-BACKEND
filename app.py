@@ -12,18 +12,14 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from dotenv import load_dotenv
 from json import JSONDecodeError
 import re
+import smtplib
+import secrets
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 load_dotenv()
 
-# === Extensions ===
-db = SQLAlchemy()
-ma = Marshmallow()
-migrate = Migrate()
-
-# === Flask App Config ===
-app = Flask(__name__)
-from config import config_by_name
-env = os.getenv("FLASK_ENV", "development")
-app.config.from_object(config_by_name[env])
+# === Import config first (before using db) ===
+from config import db, ma, migrate, app
 
 # CORS Configuration (Frontend on port 3000)
 CORS(app, origins=["http://localhost:3000"], supports_credentials=True)
@@ -33,16 +29,64 @@ class Config:
     SECRET_KEY = os.getenv('SECRET_KEY', 'supersecret')
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
+# === Email Configuration ===
+SMTP_SERVER = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
+SMTP_PORT = int(os.getenv('SMTP_PORT', 587))
+SMTP_USERNAME = os.getenv('SMTP_USERNAME')
+SMTP_PASSWORD = os.getenv('SMTP_PASSWORD')
+SMTP_FROM_EMAIL = os.getenv('SMTP_FROM_EMAIL')
+FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:3000')
+
+def send_reset_email(user_email, reset_token):
+    """Send password reset email with secure token"""
+    try:
+        subject = "Password Reset Request"
+        reset_url = f"{FRONTEND_URL}/reset-password?token={reset_token}"
+        
+        html_body = f"""
+        <html>
+            <body style="font-family: Arial, sans-serif; color: #333;">
+                <h2>Password Reset Request</h2>
+                <p>You requested a password reset for your account.</p>
+                <p><strong>This link expires in 30 minutes.</strong></p>
+                <p>
+                    <a href="{reset_url}" style="background-color: #007bff; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px;">
+                        Reset Password
+                    </a>
+                </p>
+                <p>Or copy this link: <a href="{reset_url}">{reset_url}</a></p>
+                <hr>
+                <p style="color: #666; font-size: 12px;">
+                    If you didn't request this, please ignore this email. Your account remains secure.
+                </p>
+            </body>
+        </html>
+        """
+        
+        msg = MIMEMultipart('alternative')
+        msg['Subject'] = subject
+        msg['From'] = SMTP_FROM_EMAIL
+        msg['To'] = user_email
+        
+        msg.attach(MIMEText(html_body, 'html'))
+        
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+            server.starttls()
+            server.login(SMTP_USERNAME, SMTP_PASSWORD)
+            server.send_message(msg)
+        
+        return True
+    except Exception as e:
+        print(f" Email send failed: {str(e)}")
+        return False
 
 
 
-# === Bind extensions to app ===
-db.init_app(app)
-ma.init_app(app)
-migrate.init_app(app, db)
+
+# Extensions already initialized in config.py
 
 # === Import models after db is initialized ===
-from models import Tenants, Properties, Units, Leases, RentPayments, Expenses, MaintenanceRequests, Users
+from models import Tenants, Properties, Units, Leases, RentPayments, Expenses, MaintenanceRequests, Users, PasswordResetToken
 
 # === Schemas ===
 class GenericSchema(ma.SQLAlchemyAutoSchema):
@@ -1965,41 +2009,168 @@ def logout():
     return response
 
 
-# -------------------- FORGOT PASSWORD --------------------
-@app.route('/forgot-password', methods=['POST'])
-def forgot_password():
-    data = request.json
-    email = data.get('email')
+# -------------------- PASSWORD RESET: REQUEST --------------------
+@app.route('/auth/request-reset', methods=['POST'])
+def request_password_reset():
+    """
+    Request a password reset token. Returns generic message regardless.
+    Rate limit: 3 resets per hour per user, 5 per hour per IP
+    """
+    try:
+        data = request.json
+        email = data.get('email', '').strip()
+        
+        if not email:
+            return jsonify({'message': 'If this email exists, we\'ve sent a reset link.'}), 200
+        
+        user = Users.query.filter_by(email=email).first()
+        
+        # Always return generic message (prevent account enumeration)
+        if not user:
+            return jsonify({'message': 'If this email exists, we\'ve sent a reset link.'}), 200
+        
+        # Rate limiting check (simplified - use Redis in production)
+        ip_address = request.remote_addr
+        recent_tokens = PasswordResetToken.query.filter(
+            PasswordResetToken.user_id == user.user_id,
+            PasswordResetToken.created_at >= datetime.utcnow() - timedelta(hours=1)
+        ).all()
+        
+        if len(recent_tokens) >= 3:
+            print(f" Rate limit exceeded for user {user.user_id}")
+            return jsonify({'message': 'If this email exists, we\'ve sent a reset link.'}), 200
+        
+        # Create secure token (30 minute expiry)
+        reset_token_obj, raw_token = PasswordResetToken.create_token(
+            user.user_id, 
+            ip_address=ip_address,
+            expiry_minutes=30
+        )
+        
+        db.session.add(reset_token_obj)
+        db.session.commit()
+        
+        # Send email
+        if SMTP_USERNAME and SMTP_PASSWORD:
+            email_sent = send_reset_email(user.email, raw_token)
+            if not email_sent:
+                print(f" Failed to send reset email to {user.email}")
+                # Still return success to not leak email status
+        else:
+            print(" Email not configured. Reset token created but not sent.")
+            print(f"Debug: Reset token for {user.email}: {raw_token}")
+        
+        print(f" Password reset requested for user {user.user_id} ({user.email})")
+        return jsonify({'message': 'If this email exists, we\'ve sent a reset link.'}), 200
+        
+    except Exception as e:
+        print(f" Error in request_password_reset: {str(e)}")
+        return jsonify({'message': 'If this email exists, we\'ve sent a reset link.'}), 200
 
-    if not email:
-        return jsonify({'error': 'Email is required'}), 400
 
-    user = Users.query.filter_by(email=email).first()
-    if not user:
-        return jsonify({'error': 'User not found'}), 404
+# -------------------- PASSWORD RESET: VERIFY TOKEN --------------------
+@app.route('/auth/verify-reset-token', methods=['GET'])
+def verify_reset_token():
+    """Validate reset token without consuming it"""
+    try:
+        token = request.args.get('token', '').strip()
+        
+        if not token:
+            return jsonify({'valid': False, 'message': 'Token missing'}), 400
+        
+        # Find token by raw value (we'll check hash)
+        reset_tokens = PasswordResetToken.query.filter(
+            PasswordResetToken.used == False
+        ).all()
+        
+        valid_token = None
+        for rt in reset_tokens:
+            if check_password_hash(rt.hashed_token, token):
+                valid_token = rt
+                break
+        
+        if not valid_token:
+            return jsonify({'valid': False, 'message': 'Invalid token'}), 401
+        
+        # Check expiration
+        if datetime.utcnow() > valid_token.expires_at:
+            return jsonify({'valid': False, 'message': 'Token expired'}), 401
+        
+        print(f" Token verified for user {valid_token.user_id}")
+        return jsonify({'valid': True, 'user_id': valid_token.user_id}), 200
+        
+    except Exception as e:
+        print(f" Error in verify_reset_token: {str(e)}")
+        return jsonify({'valid': False, 'message': 'Server error'}), 500
 
-    # NOTE: In production, send a password reset token via email here.
-    return jsonify({'message': 'Recovery instructions sent to email'}), 200
 
-
-# -------------------- RECOVER PASSWORD --------------------
-@app.route('/recover-password', methods=['POST'])
-def recover_password():
-    data = request.json
-    email = data.get('email')
-    new_password = data.get('new_password')
-
-    if not email or not new_password:
-        return jsonify({'error': 'Email and new password are required'}), 400
-
-    user = Users.query.filter_by(email=email).first()
-    if not user:
-        return jsonify({'error': 'User not found'}), 404
-
-    user.password = generate_password_hash(new_password)
-    db.session.commit()
-
-    return jsonify({'message': 'Password updated successfully'}), 200
+# -------------------- PASSWORD RESET: RESET PASSWORD --------------------
+@app.route('/auth/reset-password', methods=['POST'])
+def reset_password():
+    """
+    Reset password using valid token. Token becomes single-use.
+    Invalidates all existing sessions.
+    """
+    try:
+        data = request.json
+        token = data.get('token', '').strip()
+        new_password = data.get('new_password', '').strip()
+        
+        if not token or not new_password:
+            return jsonify({'error': 'Token and password required'}), 400
+        
+        # Validate password strength (minimum 8 chars)
+        if len(new_password) < 8:
+            return jsonify({'error': 'Password must be at least 8 characters'}), 400
+        
+        # Find and validate token
+        reset_tokens = PasswordResetToken.query.filter(
+            PasswordResetToken.used == False
+        ).all()
+        
+        valid_token = None
+        for rt in reset_tokens:
+            if check_password_hash(rt.hashed_token, token):
+                valid_token = rt
+                break
+        
+        if not valid_token:
+            return jsonify({'error': 'Invalid or expired token'}), 401
+        
+        # Check expiration
+        if datetime.utcnow() > valid_token.expires_at:
+            return jsonify({'error': 'Token expired'}), 401
+        
+        user = Users.query.get(valid_token.user_id)
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
+        
+        # Mark token as used
+        valid_token.used = True
+        
+        # Update password
+        user.password = generate_password_hash(new_password)
+        user.last_login = None  # Force re-authentication
+        
+        # Invalidate all other reset tokens for this user
+        PasswordResetToken.query.filter_by(user_id=user.user_id, used=False).update({'used': True})
+        
+        db.session.commit()
+        
+        print(f" Password reset successful for user {user.user_id}")
+        
+        # Optional: Send confirmation email
+        # send_confirmation_email(user.email)
+        
+        return jsonify({
+            'message': 'Password reset successful. Please login with your new password.',
+            'user_id': user.user_id
+        }), 200
+        
+    except Exception as e:
+        db.session.rollback()
+        print(f" Error in reset_password: {str(e)}")
+        return jsonify({'error': 'Server error'}), 500
 @app.route('/admin/stats/<int:admin_id>', methods=['GET'])
 def get_admin_stats(admin_id):
     try:

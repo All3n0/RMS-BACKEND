@@ -51,6 +51,3 @@ app.config.from_object(config_by_name[env])
 db.init_app(app)
 ma.init_app(app)
 migrate.init_app(app, db)
-
-# 🔥 Only now import models (AFTER db is initialized)
-from models import Tenants, Properties, Units, Leases, RentPayments, Expenses, MaintenanceRequests, Users
